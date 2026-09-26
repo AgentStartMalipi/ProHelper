@@ -1,0 +1,15 @@
+# Entornos virtuales (run.bat / run_speak.bat los recrean)
+.venv/
+.venv-speak/
+
+# Claves: solo va el .env.example
+speak/.env
+.env
+
+# Datos personales: grabaciones, transcripciones, sesiones, perfil/CV, logs
+speak/data/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
