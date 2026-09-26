@@ -8,7 +8,9 @@ transcripcion por el analizador. Tambien importa audios y transcripciones.
 
 El panel **Copiloto** (derecha) responde en vivo lo que pregunta el otro
 lado, con el brief de **Preparar llamada** y la carpeta de conocimiento
-(`notes/copilot.py`). F8 = responder ahora.
+(`notes/copilot.py`). F8 = responder ahora. Su pestana **Exploracion** dice
+que falta saber y que preguntar (F9), antes o durante la llamada. 📎 anade
+documentos o diagramas en cualquier momento, tambien en plena llamada.
 """
 
 from __future__ import annotations
@@ -41,11 +43,12 @@ from ..config import DATA_DIR, Config
 from ..knowledge import KnowledgeBase
 from ..llm_client import make_llm
 from ..notes.analyzer import MODES, generate_notes, heuristic_report, me_share
-from ..notes.copilot import COPILOT_MODES, Copilot, PrepSession
+from ..knowledge import IMAGE_EXT, SUPPORTED
+from ..notes.copilot import COPILOT_MODES, Copilot, Discovery, PrepSession, attach_file
 from ..notes.pipeline import ME, THEM, Transcript, load_any, parse_transcript_text, render
 from ..transcriber import FasterWhisperSTT, make_stt
 from .bridge import LiveSignals, TaskSignals
-from .prep_window import PrepWindow, load_prep
+from .prep_window import PasteDialog, PrepWindow, load_prep, save_prep
 
 
 class NotesWindow(QMainWindow):
@@ -57,6 +60,7 @@ class NotesWindow(QMainWindow):
         self.recorder = None
         self.live_notes = None
         self.copilot: Copilot | None = None
+        self.discovery: Discovery | None = None
         self.prep_window: PrepWindow | None = None
         self.kb = KnowledgeBase(cfg.kb_dir, DATA_DIR / "kb_cache.json")
         self.prep = PrepSession(self.kb, language=cfg.NOTES_LANGUAGE)
@@ -75,6 +79,8 @@ class NotesWindow(QMainWindow):
         self.live_sig.notes.connect(self._live_notes)
         self.live_sig.status.connect(lambda m: self._status(f"⚠ {m}", error=True))
         self.live_sig.answer.connect(self._render_copilot)
+        self.live_sig.discovery.connect(self._render_discovery)
+        self.live_sig.attached.connect(self._attached)
         self._build()
         if self.prep.mode in MODES:
             self.mode.setCurrentText(self.prep.mode)
@@ -155,11 +161,27 @@ class NotesWindow(QMainWindow):
         self.tabs.addTab(self.out_questions, "Preguntas detectadas")
         self.tabs.addTab(self.out_notes, "Notas")
 
+        side = QWidget()
+        sl = QVBoxLayout(side)
+        sl.setContentsMargins(0, 0, 0, 0)
+        files = QHBoxLayout()
+        files.addWidget(QLabel("<b>Copiloto</b>"))
+        files.addStretch(1)
+        self.lbl_docs = QLabel()
+        self.lbl_docs.setStyleSheet("color: gray;")
+        files.addWidget(self.lbl_docs)
+        self.btn_attach = QPushButton("📎 Adjuntar...")
+        self.btn_attach.setToolTip("Documentos, archivos tecnicos o imagenes de diagramas; tambien en plena llamada")
+        self.btn_paste = QPushButton("📋 Pegar...")
+        files.addWidget(self.btn_attach)
+        files.addWidget(self.btn_paste)
+        sl.addLayout(files)
+        self.side = QTabWidget()
+
         cop = QWidget()
         cl = QVBoxLayout(cop)
         cl.setContentsMargins(0, 0, 0, 0)
         head = QHBoxLayout()
-        head.addWidget(QLabel("<b>Copiloto</b>"))
         head.addStretch(1)
         self.btn_answer = QPushButton("⚡ Responder ahora (F8)")
         self.btn_answer.setToolTip("Responde a lo ultimo que dijo el otro, aunque no parezca pregunta")
@@ -169,13 +191,35 @@ class NotesWindow(QMainWindow):
         self.out_copilot = QTextBrowser()
         cl.addWidget(self.out_copilot, 1)
 
+        exp = QWidget()
+        el = QVBoxLayout(exp)
+        el.setContentsMargins(0, 0, 0, 0)
+        ehead = QHBoxLayout()
+        self.lbl_discovery = QLabel()
+        self.lbl_discovery.setStyleSheet("color: gray;")
+        ehead.addWidget(self.lbl_discovery)
+        ehead.addStretch(1)
+        self.btn_discovery = QPushButton("🔍 ¿Que me falta? (F9)")
+        self.btn_discovery.setToolTip("Que se sabe, que falta y las 3 proximas preguntas. Funciona antes y "
+                                      "durante la llamada.")
+        ehead.addWidget(self.btn_discovery)
+        el.addLayout(ehead)
+        self.out_discovery = QTextBrowser()
+        el.addWidget(self.out_discovery, 1)
+
+        self.side.addTab(cop, "💬 Respuestas")
+        self.side.addTab(exp, "🔍 Exploracion")
+        sl.addWidget(self.side, 1)
+
         split = QSplitter(Qt.Horizontal)
         split.addWidget(self.tabs)
-        split.addWidget(cop)
+        split.addWidget(side)
         split.setSizes([760, 640])
         lay.addWidget(split, 1)
         self.setCentralWidget(central)
         self._copilot_idle()
+        self._discovery_idle()
+        self._show_docs()
 
         self.btn_rec.clicked.connect(self._record)
         self.btn_stop.clicked.connect(self._stop)
@@ -187,6 +231,10 @@ class NotesWindow(QMainWindow):
         self.btn_answer.clicked.connect(self._answer_now)
         self.on_top.toggled.connect(self._toggle_on_top)
         QShortcut(QKeySequence("F8"), self, activated=self._answer_now)
+        QShortcut(QKeySequence("F9"), self, activated=self._discover_now)
+        self.btn_discovery.clicked.connect(self._discover_now)
+        self.btn_attach.clicked.connect(self._attach)
+        self.btn_paste.clicked.connect(self._paste)
         self.mode.currentTextChanged.connect(self._mode_changed)
         self.out_transcript.textChanged.connect(
             lambda: self.btn_notes.setEnabled(bool(self.out_transcript.toPlainText().strip())))
@@ -255,10 +303,17 @@ class NotesWindow(QMainWindow):
             self.copilot.start()
             self.btn_answer.setEnabled(True)
             self._copilot_idle()
+            self.discovery = self._make_discovery(live.snapshot, self.cfg.DISCOVERY_INTERVAL)
+            self.discovery.start()
 
     def _stop_live(self) -> None:
         live, self.live_notes = self.live_notes, None
         copilot, self.copilot = self.copilot, None
+        discovery, self.discovery = self.discovery, None
+        if discovery is not None:
+            discovery.stop()
+            if self.folder and discovery.text:
+                (self.folder / "exploracion.md").write_text(discovery.text + "\n", encoding="utf-8")
         self.btn_answer.setEnabled(False)
         if copilot is not None:
             copilot.stop()
@@ -287,8 +342,12 @@ class NotesWindow(QMainWindow):
             self.live_notes.mode = mode
         if self.copilot:
             self.copilot.mode = mode
+        if self.discovery:
+            self.discovery.mode = mode
         if not (self.copilot and self.copilot.answers):
             self._copilot_idle()
+        if not (self.discovery and self.discovery.text):
+            self._discovery_idle()
 
     # --- copiloto -------------------------------------------------------------
 
@@ -297,6 +356,93 @@ class NotesWindow(QMainWindow):
             self.kb.load_folder()
         except Exception as exc:
             self.live_sig.status.emit(f"carpeta de conocimiento: {exc}")
+
+    # --- exploracion y archivos -------------------------------------------------
+
+    def _make_discovery(self, snapshot, interval: float) -> Discovery:
+        return Discovery(
+            make_llm(self.cfg), self.kb, brief=lambda: self.prep.brief, snapshot=snapshot,
+            mode=self.mode.currentText(), language=self.cfg.NOTES_LANGUAGE,
+            guide=lambda: self.prep.guide, interval_s=interval,
+            on_update=self.live_sig.discovery.emit, on_status=self.live_sig.status.emit)
+
+    def _discover_now(self) -> None:
+        if self.mode.currentText() not in COPILOT_MODES:
+            self._status("En modo entrevista la exploracion en vivo esta apagada.", error=True)
+            return
+        self.side.setCurrentIndex(1)
+        self.lbl_discovery.setText("Analizando...")
+        if self.discovery:  # en llamada: el hilo en vivo la corre ya
+            self.discovery.run_now()
+            return
+        # Sin llamada en vivo: con la transcripcion cargada, si hay, o solo con
+        # el brief y los documentos (¿alcanza lo que me dieron?).
+        tr = self.transcript
+        one_off = self._make_discovery(lambda: tr, 0)
+        threading.Thread(target=one_off.run_once, args=(tr,), name="speak-discovery-now",
+                         daemon=True).start()
+
+    def _discovery_idle(self) -> None:
+        mode = self.mode.currentText()
+        if mode not in COPILOT_MODES:
+            msg = "_En modo **entrevista** la exploracion en vivo esta apagada._"
+        else:
+            auto = (f"se actualiza sola cada ~{self.cfg.DISCOVERY_INTERVAL} s"
+                    if self.cfg.DISCOVERY_INTERVAL > 0 else "se actualiza con el boton")
+            msg = ("_**🔍 ¿Que me falta?** revisa lo que se sabe (conversacion, brief y documentos), "
+                   "dice si alcanza y te da las 3 proximas preguntas. Antes de la llamada sirve para ver si "
+                   f"el contexto que te dieron es suficiente; grabando en vivo {auto}._")
+        self.out_discovery.setMarkdown(msg)
+        self.lbl_discovery.setText("")
+
+    def _render_discovery(self, md: str, done: bool) -> None:
+        self.out_discovery.setMarkdown(md)
+        self.lbl_discovery.setText(time.strftime("Actualizado %H:%M:%S") if done else "Escribiendo...")
+
+    def _show_docs(self) -> None:
+        extra = self.kb.extra_names()
+        self.lbl_docs.setText(f"{len(extra)} de la llamada · {len(self.kb.sources()) - len(extra)} de la carpeta")
+        self.lbl_docs.setToolTip("\n".join(extra))
+
+    def _attach(self) -> None:
+        exts = " ".join(f"*{e}" for e in sorted(SUPPORTED | IMAGE_EXT))
+        paths, _ = QFileDialog.getOpenFileNames(self, "Adjuntar a esta llamada", "", f"Documentos ({exts})")
+        if not paths:
+            return
+        mode, lang = self.mode.currentText(), self.cfg.NOTES_LANGUAGE
+        slow = any(Path(p).suffix.lower() in IMAGE_EXT for p in paths)
+        self._status("Leyendo archivos" + (" (las imagenes las describe Claude, ~10 s)..." if slow else "..."))
+
+        def work():
+            done, errors = [], []
+            for p in paths:
+                try:
+                    done.append(attach_file(self.kb, Path(p), lambda: make_llm(self.cfg), mode, lang))
+                except Exception as exc:
+                    errors.append(f"{Path(p).name}: {exc}")
+            msg = ("📎 Anadido: " + ", ".join(done)) if done else ""
+            if errors:
+                msg += (" · " if msg else "") + "⚠ " + " · ".join(errors)
+            self.live_sig.attached.emit(msg)
+
+        threading.Thread(target=work, name="speak-attach", daemon=True).start()
+
+    def _paste(self) -> None:
+        dlg = PasteDialog(self)
+        if dlg.exec() != PasteDialog.Accepted or not dlg.text.toPlainText().strip():
+            return
+        name = dlg.name.text().strip() or f"texto {len(self.kb.extra_names()) + 1}"
+        self.kb.add_text(name, dlg.text.toPlainText())
+        self._attached(f"📋 Anadido: {name}")
+
+    def _attached(self, msg: str) -> None:
+        save_prep(self.prep)
+        self._show_docs()
+        self._status(msg, error="⚠" in msg)
+        if self.prep_window:
+            self.prep_window._refresh_sources()
+        if self.discovery and "Anadido" in msg:
+            self.discovery.run_now()  # informacion nueva: ¿que cambia?
 
     def _open_prep(self) -> None:
         if self.prep_window is None:

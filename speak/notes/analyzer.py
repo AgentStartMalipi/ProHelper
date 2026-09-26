@@ -72,6 +72,8 @@ MODES = {
     "reunion": "a work meeting",
     "venta": "a sales / client call (the user, 'Yo', is on the selling/consulting side)",
     "soporte": "a support / technical call (the user, 'Yo', is the one giving support)",
+    "arquitectura": "a solutions-architecture / technical discovery call with a client (the user, 'Yo', is the "
+                    "solutions architect)",
     "llamada": "a general call",
 }
 
@@ -125,6 +127,26 @@ Concrete topics to review before the next round, prioritized.
 ## Problema reportado y diagnóstico
 Symptoms, environment, what was tried, root cause if found.
 ## Solución o siguiente paso
+""",
+    "arquitectura": """
+## Arquitectura actual (según lo dicho y los documentos)
+Components, technologies, integrations and data flows, infra/cloud, volumes. Cite timestamps.
+
+## Requisitos
+Functional and non-functional (scale, latency, availability/SLA, RPO/RTO, security, compliance).
+
+## Restricciones y supuestos
+Mark assumptions nobody confirmed as [supuesto].
+
+## Dolores y riesgos técnicos
+
+## Huecos de información
+What is still unknown and matters for the design, and the exact question to ask for each.
+
+## Opciones de solución esbozadas
+Only the ones discussed; with tradeoffs mentioned.
+
+## Próximos pasos técnicos
 """,
     "reunion": "",
     "llamada": "",

@@ -1,7 +1,9 @@
 """Clientes de LLM con streaming y cancelacion.
 
-Interfaz unica: `stream(system, prompt, cancel)` → iterador de trozos de
-texto. La UI pinta cada trozo al llegar.
+Interfaz unica: `stream(system, prompt, cancel, images)` → iterador de trozos
+de texto. La UI pinta cada trozo al llegar. `images` (rutas) es para los
+diagramas que adjuntas al copiloto: viajan en base64 dentro del mensaje, como
+en SCREEN, no como ruta para que Claude las abra con una herramienta.
 
 - `ClaudeCLIClient` (de serie): `claude -p` con `--include-partial-messages`,
   que emite `text_delta` token a token. Reutiliza tu login de Claude Code,
@@ -16,12 +18,14 @@ reabierto no esperan a que termine la respuesta vieja.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import shutil
 import subprocess
 import threading
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Iterator
 
 log = logging.getLogger(__name__)
@@ -32,14 +36,47 @@ class LLMError(RuntimeError):
     pass
 
 
+_MEDIA = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+          ".webp": "image/webp"}
+_MAX_IMAGE_BYTES = 3_500_000  # la API rechaza imagenes de mas de ~5 MB en base64
+
+
+def image_block(path: Path) -> dict:
+    """Bloque de imagen para la API. Las muy pesadas (capturas 4K) se reducen
+    con Qt (ya es dependencia de SPEAK) a JPEG de 2000 px de lado."""
+    path = Path(path)
+    data, media = path.read_bytes(), _MEDIA.get(path.suffix.lower(), "image/png")
+    if len(data) > _MAX_IMAGE_BYTES:
+        from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
+        from PySide6.QtGui import QImage
+
+        img = QImage(str(path))
+        if img.isNull():
+            raise LLMError(f"no pude abrir la imagen {path.name}")
+        img = img.scaled(2000, 2000, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        buf = QByteArray()
+        io = QBuffer(buf)
+        io.open(QIODevice.WriteOnly)
+        img.save(io, "JPEG", 85)
+        data, media = bytes(buf), "image/jpeg"
+    return {"type": "image",
+            "source": {"type": "base64", "media_type": media, "data": base64.b64encode(data).decode("ascii")}}
+
+
+def user_message_json(text: str, images: list[Path]) -> str:
+    """Mensaje para `claude -p --input-format stream-json` (una linea)."""
+    content = [image_block(p) for p in images] + [{"type": "text", "text": text}]
+    return json.dumps({"type": "user", "message": {"role": "user", "content": content}})
+
+
 class LLMClient(ABC):
     @abstractmethod
-    def stream(self, system: str, prompt: str,
-               cancel: threading.Event | None = None) -> Iterator[str]:
+    def stream(self, system: str, prompt: str, cancel: threading.Event | None = None,
+               images: list[Path] | None = None) -> Iterator[str]:
         ...
 
-    def complete(self, system: str, prompt: str) -> str:
-        return "".join(self.stream(system, prompt))
+    def complete(self, system: str, prompt: str, images: list[Path] | None = None) -> str:
+        return "".join(self.stream(system, prompt, images=images))
 
 
 class ClaudeCLIClient(LLMClient):
@@ -48,7 +85,7 @@ class ClaudeCLIClient(LLMClient):
         self.effort = effort
         self.timeout = timeout
 
-    def _args(self, system: str) -> list[str]:
+    def _args(self, system: str, json_input: bool = False) -> list[str]:
         cli = shutil.which("claude")
         if not cli:
             raise LLMError("no encuentro `claude` en el PATH (instala Claude Code o usa "
@@ -62,11 +99,12 @@ class ClaudeCLIClient(LLMClient):
             "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
             "--setting-sources", "", "--permission-mode", "dontAsk",
             "--no-session-persistence", "--system-prompt", system,
-        ]
+        ] + (["--input-format", "stream-json"] if json_input else [])
 
-    def stream(self, system, prompt, cancel=None):
+    def stream(self, system, prompt, cancel=None, images=None):
+        payload = user_message_json(prompt, images) + "\n" if images else prompt
         proc = subprocess.Popen(
-            self._args(system), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            self._args(system, json_input=bool(images)), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
             creationflags=_NO_WINDOW,
         )
@@ -75,7 +113,7 @@ class ClaudeCLIClient(LLMClient):
         got_delta = False
         final_text = ""
         try:
-            proc.stdin.write(prompt)
+            proc.stdin.write(payload)
             proc.stdin.close()
             for line in proc.stdout:
                 if cancel is not None and cancel.is_set():
@@ -126,10 +164,11 @@ class AnthropicClient(LLMClient):
         self.model = model
         self.max_tokens = max_tokens
 
-    def stream(self, system, prompt, cancel=None):
+    def stream(self, system, prompt, cancel=None, images=None):
+        content = ([image_block(p) for p in images] + [{"type": "text", "text": prompt}]) if images else prompt
         with self._client.messages.stream(
             model=self.model, max_tokens=self.max_tokens, system=system,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": content}],
         ) as s:
             for text in s.text_stream:
                 if cancel is not None and cancel.is_set():
@@ -144,7 +183,7 @@ class FakeLLM(LLMClient):
         self.reply = reply
         self.calls: list[tuple[str, str]] = []
 
-    def stream(self, system, prompt, cancel=None):
+    def stream(self, system, prompt, cancel=None, images=None):
         self.calls.append((system, prompt))
         for i in range(0, len(self.reply), 7):
             if cancel is not None and cancel.is_set():

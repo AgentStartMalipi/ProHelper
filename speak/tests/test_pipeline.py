@@ -163,8 +163,9 @@ class ScriptedLLM(LLMClient):
         self.replies = list(replies)
         self.prompts = []
 
-    def stream(self, system, prompt, cancel=None):
+    def stream(self, system, prompt, cancel=None, images=None):
         self.prompts.append((system, prompt))
+        self.images = getattr(self, "images", []) + list(images or [])
         reply = self.replies.pop(0) if self.replies else "ok"
         for i in range(0, len(reply), 5):
             yield reply[i:i + 5]
@@ -574,6 +575,130 @@ class CopilotTests(unittest.TestCase):
         _, user = llm.prompts[1]
         self.assertIn("Preguntas probables", user)
         self.assertIn("Reunion con Acme", user)
+
+
+DRAWIO_MODEL = """<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="vpc" value="VPC prod" vertex="1" parent="1"/>
+<mxCell id="api" value="API Gateway" vertex="1" parent="vpc"/>
+<mxCell id="db" value="&lt;b&gt;Postgres&lt;/b&gt;&lt;br&gt;RDS" vertex="1" parent="vpc"/>
+<mxCell id="e1" value="SQL/TLS" edge="1" source="api" target="db" parent="1"/>
+</root></mxGraphModel>"""
+
+
+class ArchitectureTests(unittest.TestCase):
+    def test_drawio_plain_and_compressed(self):
+        import base64
+        import urllib.parse
+        import zlib
+
+        from speak.knowledge import _drawio_text
+
+        plain = f'<mxfile><diagram name="Actual">{DRAWIO_MODEL}</diagram></mxfile>'
+        text = _drawio_text(plain)
+        self.assertIn("[Diagrama: Actual]", text)
+        self.assertIn("- API Gateway (dentro de VPC prod)", text)
+        self.assertIn("- API Gateway → Postgres RDS (SQL/TLS)", text)
+        comp = zlib.compressobj(9, zlib.DEFLATED, -15)
+        packed = comp.compress(urllib.parse.quote(DRAWIO_MODEL).encode()) + comp.flush()
+        old = f'<mxfile><diagram name="Viejo">{base64.b64encode(packed).decode()}</diagram></mxfile>'
+        self.assertIn("API Gateway → Postgres RDS", _drawio_text(old))
+
+    def test_image_goes_to_claude_once_and_becomes_text(self):
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        from speak.knowledge import KnowledgeBase
+        from speak.notes.copilot import attach_file
+
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            img = tmp / "diagrama.png"
+            img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+            llm = ScriptedLLM(["Componentes:\n- Kafka\n- Lambda\nConexiones:\n- Kafka → Lambda"])
+            kb = KnowledgeBase()
+            name = attach_file(kb, img, lambda: llm, "arquitectura")
+            self.assertEqual(name, "diagrama.png")
+            self.assertEqual(llm.images, [img])
+            self.assertIn("every component", llm.prompts[0][0])
+            self.assertNotIn("a a ", llm.prompts[0][0])
+            self.assertEqual(kb.search("kafka")[0].source, "diagrama.png")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_cli_message_carries_image_base64(self):
+        import json
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        from speak.llm_client import user_message_json
+
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            img = tmp / "d.jpg"
+            img.write_bytes(b"\xff\xd8\xffdata")
+            msg = json.loads(user_message_json("describe", [img]))
+            content = msg["message"]["content"]
+            self.assertEqual(content[0]["source"]["media_type"], "image/jpeg")
+            self.assertEqual(content[-1], {"type": "text", "text": "describe"})
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_discovery_prompt_before_and_during_call(self):
+        from speak.notes.copilot import discovery_prompt
+
+        system, user = discovery_prompt(None, "Cliente: banco, migrar core a AWS", "(none)", "arquitectura")
+        self.assertIn("has not started", user)
+        self.assertIn("RPO/RTO", user)
+        self.assertIn("propose a solution architecture", user)
+        self.assertIn("Never treat an assumption as a fact", system)
+        tr = Transcript([Segment(3, 8, "We process about two million transactions a day.", "Ellos")], "t")
+        _, user = discovery_prompt(tr, "", "(none)", "venta")
+        self.assertIn("two million transactions", user)
+        self.assertIn("Quién decide", user)
+
+    def test_discovery_auto_refresh_rules(self):
+        from speak.notes.copilot import Discovery
+
+        d = Discovery(ScriptedLLM([]), None, brief=lambda: "", snapshot=lambda: None, mode="arquitectura",
+                      interval_s=90, min_new_words=40)
+        t0 = d._last_run
+        self.assertFalse(d.due(100, t0 + 30))  # muy pronto
+        self.assertFalse(d.due(10, t0 + 120))  # casi nada nuevo
+        self.assertTrue(d.due(100, t0 + 120))
+        d.mode = "entrevista"
+        self.assertFalse(d.due(100, t0 + 120))
+        d.run_now()
+        self.assertTrue(d.due(0, t0))  # el boton siempre
+
+    def test_discovery_runs_and_reports(self):
+        from speak.knowledge import KnowledgeBase
+        from speak.notes.copilot import Discovery
+
+        kb = KnowledgeBase()
+        kb.add_text("arquitectura_actual.drawio", "API Gateway → Postgres RDS")
+        llm = ScriptedLLM(["**Veredicto:** falta volumen\n### Pregunta ahora\n1. ¿Cuantas transacciones?"])
+        updates = []
+        d = Discovery(llm, kb, brief=lambda: "Banco X", snapshot=lambda: None, mode="arquitectura",
+                      on_update=lambda md, done: updates.append(done))
+        text = d.run_once(None)
+        self.assertTrue(text.startswith("**Veredicto:**"))
+        self.assertEqual(updates[-1], True)
+        self.assertIn("Postgres RDS", llm.prompts[0][1])
+
+    def test_architecture_mode_everywhere(self):
+        from speak.knowledge import KnowledgeBase
+        from speak.notes.analyzer import notes_prompt
+        from speak.notes.copilot import COPILOT_MODES, PrepSession
+
+        self.assertIn("arquitectura", COPILOT_MODES)
+        prep = PrepSession(KnowledgeBase(), mode="arquitectura")
+        _, user = prep.brief_prompt()
+        self.assertIn("¿Alcanza la información?", user)
+        self.assertIn("Preguntas que debo hacer yo", user)
+        tr = Transcript([Segment(0, 2, "What is your RPO?", "Ellos")], "t")
+        self.assertIn("Huecos de información", notes_prompt(tr, "arquitectura")[1])
 
 
 if __name__ == "__main__":

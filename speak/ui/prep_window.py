@@ -40,10 +40,10 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import DATA_DIR, Config
-from ..knowledge import SUPPORTED, KnowledgeBase
+from ..knowledge import IMAGE_EXT, SUPPORTED, KnowledgeBase
 from ..llm_client import make_llm
 from ..notes.analyzer import MODES
-from ..notes.copilot import COPILOT_MODES, PRESETS, PrepSession
+from ..notes.copilot import COPILOT_MODES, PRESETS, Discovery, PrepSession, attach_file
 from .bridge import TaskSignals
 
 PREP_FILE = DATA_DIR / "prep" / "current.json"
@@ -211,7 +211,11 @@ class PrepWindow(QMainWindow):
         rl.addWidget(self.brief, 1)
         brow = QHBoxLayout()
         self.btn_brief = QPushButton("✨ Armar brief")
+        self.btn_gaps = QPushButton("🔍 ¿Que me falta?")
+        self.btn_gaps.setToolTip("¿Alcanza la informacion que tengo? Que se sabe, que falta y que preguntar. "
+                                 "El resultado queda en el chat y entra al brief.")
         brow.addStretch(1)
+        brow.addWidget(self.btn_gaps)
         brow.addWidget(self.btn_brief)
         rl.addLayout(brow)
 
@@ -238,6 +242,7 @@ class PrepWindow(QMainWindow):
         self.btn_send.clicked.connect(self._send)
         self.btn_stop.clicked.connect(self._cancel_task)
         self.btn_brief.clicked.connect(self._build_brief)
+        self.btn_gaps.clicked.connect(self._gaps)
         self.brief.textChanged.connect(self._brief_edited)
         self.guide.textChanged.connect(self._guide_edited)
         self.presets.activated.connect(self._use_preset)
@@ -279,18 +284,20 @@ class PrepWindow(QMainWindow):
         os.startfile(str(folder))
 
     def _attach(self) -> None:
-        exts = " ".join(f"*{e}" for e in sorted(SUPPORTED))
+        exts = " ".join(f"*{e}" for e in sorted(SUPPORTED | IMAGE_EXT))
         paths, _ = QFileDialog.getOpenFileNames(self, "Documentos para esta llamada", "",
                                                 f"Documentos ({exts})")
         if not paths:
             return
+        mode, lang = self.prep.mode, self.prep.language
 
         def work():
             errors = []
             for p in paths:
-                self.sig.progress.emit(f"Leyendo {Path(p).name}...")
+                image = Path(p).suffix.lower() in IMAGE_EXT
+                self.sig.progress.emit(f"{'Claude describe' if image else 'Leyendo'} {Path(p).name}...")
                 try:
-                    self.kb.add_file(Path(p))
+                    attach_file(self.kb, Path(p), lambda: make_llm(self.cfg), mode, lang)
                 except Exception as exc:
                     errors.append(f"{Path(p).name}: {exc}")
             return ("attached", errors)
@@ -400,6 +407,27 @@ class PrepWindow(QMainWindow):
             text = "Guia propia. Se aplica ya, tambien a mitad de llamada."
         self.lbl_guide.setText(text)
 
+    def _gaps(self) -> None:
+        if self._busy:
+            return
+        self.prep.brief = self.brief.toPlainText()
+        if self.prep.mode not in COPILOT_MODES:
+            self._set_status("En modo entrevista usa el chat para prepararte.", error=True)
+            return
+        disc = Discovery(make_llm(self.cfg), self.kb, brief=lambda: self.prep.brief, snapshot=lambda: None,
+                         mode=self.prep.mode, language=self.prep.language, guide=lambda: self.prep.guide,
+                         on_update=lambda md, done: self.sig.chunk.emit(md))
+        self._streaming = "…"
+        self._render_chat()
+
+        def work():
+            text = disc.run_once(None)
+            if text:
+                # Queda en la conversacion: asi entra al brief.
+                self.prep.messages.append(("assistant", "🔍 **Exploracion**\n\n" + text))
+            return ("chat", text)
+        self._run(work)
+
     def _brief_edited(self) -> None:
         if not self._busy:
             self.prep.brief = self.brief.toPlainText()
@@ -418,7 +446,7 @@ class PrepWindow(QMainWindow):
     def _run(self, fn) -> None:
         self._busy = True
         self._cancel = threading.Event()
-        for b in (self.btn_send, self.btn_brief):
+        for b in (self.btn_send, self.btn_brief, self.btn_gaps):
             b.setEnabled(False)
         self.btn_stop.setEnabled(True)
 
@@ -440,7 +468,7 @@ class PrepWindow(QMainWindow):
         self._busy = False
         self._streaming = ""
         self._brief_stream = False
-        for b in (self.btn_send, self.btn_brief):
+        for b in (self.btn_send, self.btn_brief, self.btn_gaps):
             b.setEnabled(True)
         self.btn_stop.setEnabled(False)
         if kind == "indexed":

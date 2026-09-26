@@ -88,7 +88,8 @@ Cada sesión se guarda en `data/sessions/`.
 - **Importar transcripción**: VTT de Teams/Zoom, o texto `Nombre: frase` con
   `[mm:ss]` opcional. También se puede pegar en el cuadro y corregir nombres a
   mano antes de generar.
-- **Generar notas**: tipo `entrevista`, `reunion`, `venta` o `llamada`. La
+- **Generar notas**: tipo `entrevista`, `reunion`, `venta`, `soporte`,
+  `arquitectura` o `llamada`. La
   pestaña *Preguntas detectadas* sale al instante, por reglas y sin LLM, e
   incluye qué porcentaje hablaste tú.
 
@@ -101,7 +102,8 @@ Tres piezas:
 
 1. **Carpeta de conocimiento** (`KB_DIR`, de serie `speak/data/knowledge`):
    tus PDF, Word, PowerPoint, Markdown, texto y CSV de siempre (portafolio,
-   fichas técnicas, precios, casos de éxito). Se indexa sola al abrir Notas
+   fichas técnicas, precios, casos de éxito), y archivos técnicos: draw.io
+   (salen componentes y conexiones), YAML, Terraform, SQL, PlantUML, Mermaid. Se indexa sola al abrir Notas
    de llamada y solo relee los archivos que cambiaron. Todo local.
 2. **🧭 Preparar llamada** (antes de la llamada): un mini chat. Le cuentas de
    qué va ("mañana con el gerente de planta de Acme, quieren bajar vapor,
@@ -136,7 +138,38 @@ siguiente. No se borra con **Nueva preparación**. Plantillas:
 | Soporte técnico | Primero lo que falta para diagnosticar, luego pasos numerados; no promete fechas |
 | Reunión con gerencia | Conclusión o cifra primero, riesgos con impacto, y qué decisión se necesita |
 | Solo la frase (lo más rápido) | Una línea de máximo 25 palabras |
+| Solutions architect | Recomendación + su tradeoff; si depende de un requisito desconocido, la pregunta que lo aclara; no compromete costos ni dimensionamiento |
 | Siempre en español | Aunque el otro hable en inglés |
+
+### Exploración y archivos en plena llamada (p. ej. arquitecto de soluciones)
+
+Modo **`arquitectura`**: llamada técnica con un cliente donde tú eres el
+arquitecto. Te pasan el contexto (diagramas, documentos) y hay que ver si
+alcanza para proponer, y qué preguntar.
+
+- **🔍 ¿Qué me falta? (F9)**, pestaña *Exploración* del copiloto: con la
+  conversación (si la hay), el brief y los documentos da un **veredicto** (¿alcanza
+  para proponer?), las **3 próximas preguntas** priorizadas por cuánto cambian
+  la solución, la **cobertura** por dimensión (✅ / ◐ / ❌: objetivo, volumen y
+  picos, arquitectura actual, integraciones, datos, SLA/latencia/RPO/RTO,
+  seguridad, cumplimiento, infraestructura, operación, presupuesto y
+  decisores, dolores) y un **Ojo** con contradicciones y supuestos no
+  confirmados. Antes de la llamada sirve para ver si el contexto que te
+  dieron es suficiente (también en Preparar llamada, donde el resultado
+  queda en el chat y entra al brief). Grabando en vivo se reescribe sola cada
+  `DISCOVERY_INTERVAL` segundos con conversación nueva, y al adjuntar algo.
+  Otros modos tienen sus dimensiones: en `venta`, necesidad, impacto,
+  decisores, presupuesto, plazos, competencia; en `soporte`, síntoma,
+  entorno, reproducción, lo que ya se probó.
+- **📎 Adjuntar / 📋 Pegar** (panel del copiloto): en cualquier momento,
+  también en plena llamada. Los documentos entran al instante. Las
+  **imágenes** (capturas de diagramas) las describe Claude una vez
+  (~12-15 s): componentes, conexiones, zonas, y las dudas de lo que el dibujo
+  no confirma; esa descripción queda buscable como un documento más.
+- Las notas finales en modo `arquitectura` traen arquitectura actual,
+  requisitos, restricciones y supuestos, riesgos técnicos, huecos de
+  información con la pregunta para cada uno, opciones esbozadas y próximos
+  pasos. Al detener queda `exploracion.md` en la carpeta de la llamada.
 
 Cuándo da la pregunta por terminada (la gente hace pausas a mitad de una
 idea): la pregunta es **todo** lo que el otro dijo desde tu última
@@ -172,6 +205,7 @@ Por consola:
 | `COPILOT_ENABLED` | copiloto en vivo (`true`) |
 | `KB_DIR` | carpeta de conocimiento; vacío = `speak/data/knowledge`. También se elige en Preparar llamada |
 | `COPILOT_QUIET_S` | segundos de silencio del otro para dar su pregunta por terminada (1.2) |
+| `DISCOVERY_INTERVAL` | segundos entre exploraciones en vivo, si hubo conversación nueva (90). `0` = solo con el botón / F9 |
 
 Las API keys solo van en `.env`, nunca en el código; ⚙ Settings no las toca.
 
@@ -217,7 +251,7 @@ Micrófono ─► audio_capture (VAD por energía + segmentador de frases)
 
     .venv-speak\Scripts\python.exe -m unittest discover -s speak/tests -t .
 
-Son 56 y no usan micrófono, red ni modelos. El detector de turnos cubre:
+Son 63 y no usan micrófono, red ni modelos. El detector de turnos cubre:
 pregunta corta, pregunta de varias frases, pausa dentro de una pregunta (con
 y sin puntos suspensivos), follow-up, alguien pensando en voz alta, solo
 muletillas, afirmación sin pregunta, turno reabierto, transcripción
@@ -228,4 +262,6 @@ vivo (dos pistas a distinta frecuencia → transcripción Yo/Ellos → borrador)
 de la base de conocimiento (Word/PowerPoint, tildes, plurales, caché) y del
 copiloto (espera al silencio, frase colgada, audio sin transcribir, pausa a
 mitad de idea que rehace la respuesta, Responder ahora, nunca en entrevista,
-brief y guía de la preparación).
+brief y guía de la preparación) y de arquitectura (draw.io normal y
+comprimido, imagen → descripción buscable, exploración antes y durante la
+llamada, cuándo se refresca sola).

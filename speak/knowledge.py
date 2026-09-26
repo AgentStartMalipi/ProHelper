@@ -1,8 +1,11 @@
 """Base de conocimiento local para el copiloto (el "RAG").
 
-- `read_document`: PDF, Word, PowerPoint, Markdown, texto, CSV, VTT, HTML.
+- `read_document`: PDF, Word, PowerPoint, Markdown, texto, CSV, VTT, HTML y
+  archivos tecnicos (YAML, Terraform, SQL, PlantUML, Mermaid, draw.io).
   Word y PowerPoint se leen directo de su XML (son zips): sin dependencias.
-  PDF usa `pypdf`.
+  PDF usa `pypdf`. De draw.io salen componentes y conexiones ("A → B").
+  Las imagenes (diagramas) no se leen aqui: necesitan a Claude, ver
+  `notes/copilot.attach_file`.
 - `chunk_text`: trozos de ~900 caracteres por parrafos, con solape.
 - `BM25`: busqueda lexica. Sin modelos ni descargas, en milisegundos: en vivo
   cada segundo cuenta. Normaliza tildes y recorta las palabras a 5 letras,
@@ -21,6 +24,7 @@ la misma interfaz `search`.
 
 from __future__ import annotations
 
+import base64
 import csv
 import io
 import json
@@ -28,7 +32,9 @@ import logging
 import math
 import re
 import unicodedata
+import urllib.parse
 import zipfile
+import zlib
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +42,9 @@ from xml.etree import ElementTree as ET
 
 log = logging.getLogger(__name__)
 
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 SUPPORTED = {".txt", ".md", ".markdown", ".pdf", ".docx", ".pptx", ".csv", ".vtt", ".html", ".htm",
+             ".yaml", ".yml", ".tf", ".sql", ".xml", ".puml", ".plantuml", ".mmd", ".drawio",
              ".json"}
 
 
@@ -102,6 +110,46 @@ def _csv_text(raw: str) -> str:
     return "\n\n".join("; ".join(f"{h}: {v}" for h, v in zip(head, r) if v) for r in rows[1:])
 
 
+def _clean_label(value: str) -> str:
+    value = re.sub(r"<br\s*/?>", " ", value or "", flags=re.I)
+    value = re.sub(r"<[^>]+>", "", value)
+    return " ".join(urllib.parse.unquote(value).replace("&nbsp;", " ").split())
+
+
+def _drawio_text(raw: str) -> str:
+    """Componentes y conexiones de un .drawio. Las versiones viejas guardan
+    cada pagina comprimida (base64 + deflate + urlencode)."""
+    root = ET.fromstring(raw)
+    pages = []
+    diagrams = root.findall(".//diagram") or [root]
+    for n, diagram in enumerate(diagrams, 1):
+        model = diagram.find(".//mxGraphModel")
+        if model is None and (diagram.text or "").strip():
+            try:
+                inflated = zlib.decompress(base64.b64decode(diagram.text.strip()), -15)
+                model = ET.fromstring(urllib.parse.unquote(inflated.decode("utf-8")))
+            except Exception:
+                continue
+        if model is None:
+            continue
+        cells = {c.get("id"): c for c in model.iter("mxCell")}
+        names = {cid: _clean_label(c.get("value", "")) for cid, c in cells.items()}
+        comps, links = [], []
+        for cid, c in cells.items():
+            if c.get("edge") == "1":
+                a, b = names.get(c.get("source"), ""), names.get(c.get("target"), "")
+                if a or b:
+                    label = f" ({names[cid]})" if names.get(cid) else ""
+                    links.append(f"- {a or '?'} → {b or '?'}{label}")
+            elif c.get("vertex") == "1" and names.get(cid):
+                parent = names.get(c.get("parent"), "")
+                comps.append(f"- {names[cid]}" + (f" (dentro de {parent})" if parent else ""))
+        title = diagram.get("name") or f"Pagina {n}"
+        pages.append(f"[Diagrama: {title}]\nComponentes:\n" + "\n".join(comps or ["- —"])
+                     + "\nConexiones:\n" + "\n".join(links or ["- —"]))
+    return "\n\n".join(pages)
+
+
 def read_document(path: Path) -> str:
     path = Path(path)
     ext = path.suffix.lower()
@@ -112,6 +160,8 @@ def read_document(path: Path) -> str:
     if ext == ".pptx":
         return _pptx_text(path)
     raw = path.read_text(encoding="utf-8", errors="replace")
+    if ext == ".drawio":
+        return _drawio_text(raw)
     if ext == ".csv":
         return _csv_text(raw)
     if ext in {".html", ".htm"}:

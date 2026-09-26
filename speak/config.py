@@ -97,6 +97,9 @@ class Config:
     KB_DIR: str = ""
     # Silencio (s) del otro para dar su pregunta por terminada.
     COPILOT_QUIET_S: float = 1.2
+    # Exploracion ("¿que me falta?") en vivo: cada cuantos segundos se
+    # reescribe si hubo conversacion nueva. 0 = solo con el boton (F9).
+    DISCOVERY_INTERVAL: int = 90
 
     @property
     def kb_dir(self) -> Path:

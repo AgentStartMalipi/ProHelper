@@ -28,6 +28,17 @@ tono e idioma; lo que no puede quitar es "no inventes cifras ni
 compromisos", que se repite al final. Se lee en cada respuesta: cambiarla a
 mitad de llamada vale para la siguiente. `PRESETS` son las plantillas.
 
+**Exploracion** (`discovery_prompt`, `Discovery`): "¿que me falta?". Con la
+conversacion (si la hay), el brief y los documentos, marca que dimensiones
+del modo estan cubiertas (en arquitectura: objetivo, volumen, integraciones,
+datos, RPO/RTO, seguridad...), dice si la informacion alcanza para proponer y
+da las 3 proximas preguntas. Antes de la llamada sirve para ver si el
+contexto que te dieron es suficiente; durante, se actualiza sola.
+
+**Archivos** (`attach_file`): documentos se leen tal cual; las imagenes
+(diagramas) las describe Claude una vez (componentes, conexiones, zonas) y
+esa descripcion entra a la base como texto.
+
 No responde en modo `entrevista`: soplar respuestas en una entrevista real
 engana al entrevistador. Para entrevistas esta el simulador.
 """
@@ -40,7 +51,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from ..knowledge import KnowledgeBase, format_sources
+from pathlib import Path
+
+from ..knowledge import IMAGE_EXT, KnowledgeBase, format_sources
 from ..llm_client import LLMClient
 from ..turn_detector import ends_incomplete, only_fillers, question_kind
 from .analyzer import MODES
@@ -48,12 +61,12 @@ from .pipeline import ME, Transcript, _fmt, render
 
 log = logging.getLogger(__name__)
 
-COPILOT_MODES = {"venta", "reunion", "soporte", "llamada"}
+COPILOT_MODES = {"venta", "reunion", "soporte", "arquitectura", "llamada"}
 
 
 # --- prompts -----------------------------------------------------------------
 
-ANSWER_SYSTEM = """You are the silent real-time assistant of the user ("Yo") during a live {what}. The other side
+ANSWER_SYSTEM = """You are the silent real-time assistant of the user ("Yo") during a live call ({what}). The other side
 just said something that needs an answer. Write what Yo can say, ready to be spoken aloud.
 
 Rules:
@@ -104,6 +117,15 @@ Nunca hables mal de la competencia.""",
 - Si piden una decision, di claramente que necesito de ellos.""",
     },
     {
+        "nombre": "Solutions architect",
+        "texto": """Soy el arquitecto de soluciones frente al cliente. Cuando pregunten algo tecnico:
+- Da una recomendacion concreta y su principal tradeoff (costo, complejidad, lock-in, operacion).
+- Si la respuesta depende de un requisito que no conocemos (volumen, latencia, RPO/RTO, cumplimiento), dilo y
+  termina con la pregunta exacta que lo aclara.
+- No comprometas dimensionamiento, costos ni plazos sin datos: ofrece estimarlo despues de la exploracion.
+- Usa los nombres de componentes tal como aparecen en sus diagramas y documentos.""",
+    },
+    {
         "nombre": "Solo la frase (lo mas rapido)",
         "texto": """Solo la linea **Respuesta:**, maximo 25 palabras, sin bullets ni linea de Fuente.
 Si no esta en las fuentes, una frase segura para ganar tiempo.""",
@@ -144,11 +166,19 @@ def answer_prompt(question: str, brief: str, sources: str, recent: str, mode: st
     return with_guide(ANSWER_SYSTEM.format(what=what), guide), user
 
 
-PREP_SYSTEM = """You help the user ("Yo") prepare for an upcoming {what}. Yo will tell you what it is about and which
+PREP_SYSTEM = """You help the user ("Yo") prepare for an upcoming call ({what}). Yo will tell you what it is about and which
 documents matter; you study them and help get ready to answer well. Be a sharp, practical partner: ask about what
 is missing (who attends, their goal, what Yo wants out of it), point out gaps and contradictions in the documents,
 and propose likely questions. Ground facts in the SOURCES and cite them in brackets. Never invent numbers, prices or
 commitments. Write in {language}. Be concise; use markdown."""
+
+BRIEF_SECTIONS_MODE = {
+    "arquitectura": """## Arquitectura actual (según los documentos)
+Components, integrations, data flows, infra — each with its source. Mark what is inferred as [supuesto].
+## ¿Alcanza la información?
+One-line verdict: enough to propose what, and what is missing to propose a solution.
+""",
+}
 
 BRIEF_SECTIONS = """
 # Brief de la llamada
@@ -160,11 +190,230 @@ Who, what, why, and what Yo wants to achieve.
 Facts, numbers, prices, dates, names — each with its source in brackets.
 ## Preguntas probables y respuesta preparada
 For each: the question, then a 1-3 sentence answer Yo can say, with source.
+## Preguntas que debo hacer yo
+Exploration questions, prioritized by how much they change the proposal; each ready to say, open-ended.
 ## Objeciones y riesgos
 For each: the objection and how to handle it.
 ## Lo que no sabemos
 Things to confirm or avoid promising.
 """
+
+
+# --- exploracion -------------------------------------------------------------
+
+DIMENSIONS = {
+    "arquitectura": [
+        "Objetivo de negocio y criterio de éxito",
+        "Usuarios, volumen, picos y crecimiento",
+        "Arquitectura actual: componentes y tecnologías",
+        "Integraciones y sistemas externos (APIs, protocolos, sincrónico/asíncrono)",
+        "Datos: volumen, tipos, sensibilidad, residencia y retención",
+        "No funcionales: disponibilidad/SLA, latencia, RPO/RTO",
+        "Seguridad e identidad (IAM/SSO, cifrado, red)",
+        "Cumplimiento y regulación",
+        "Infraestructura y restricciones (nube, on-prem, licencias, proveedor)",
+        "Operación: despliegue, monitoreo, soporte, equipo y skills",
+        "Presupuesto, plazos y quién decide",
+        "Dolores actuales y riesgos",
+    ],
+    "venta": [
+        "Necesidad y dolor concreto",
+        "Impacto: cuánto le cuesta el problema",
+        "Situación y solución actual",
+        "Quién decide y cómo es el proceso de compra",
+        "Presupuesto",
+        "Plazos y urgencia",
+        "Competencia o alternativas que evalúan",
+        "Criterios de decisión",
+        "Próximo paso acordado",
+    ],
+    "soporte": [
+        "Síntoma o error exacto",
+        "Desde cuándo y qué cambió",
+        "Alcance: usuarios o sistemas afectados",
+        "Entorno y versiones",
+        "Se puede reproducir (pasos)",
+        "Lo que ya se probó",
+        "Impacto y urgencia",
+        "Seguimiento: quién y cuándo",
+    ],
+    "reunion": [
+        "Objetivo de la reunión",
+        "Decisiones tomadas",
+        "Responsables y fechas",
+        "Bloqueos",
+        "Riesgos",
+        "Información pendiente",
+    ],
+    "llamada": [
+        "Objetivo de la llamada",
+        "Necesidades de la otra parte",
+        "Acuerdos",
+        "Pendientes",
+    ],
+}
+
+DISCOVERY_SYSTEM = """You help the user ("Yo") run discovery in a call ({what}). Judge what is already known and what is
+missing, from the conversation so far (if any), the BRIEF and the SOURCES. Never treat an assumption as a fact; if
+something is only in a document but was not confirmed in the call, say so. Write in {language}. Be terse: this is
+read during the call."""
+
+_DISCOVERY_FORMAT = """
+**Veredicto:** one line — is the information enough to {goal}? If not, what blocks it.
+
+### Pregunta ahora
+The 3 next questions, most important first: the ones whose answer changes the {goal_short} the most and that were
+NOT already answered. Each ready to say (open-ended, one sentence), then "— " and why it matters (max 10 words).
+
+### Cobertura
+One line per dimension: ✅ covered / ◐ partial / ❌ missing, then what is known (max 12 words, cite [mm:ss] or
+[source]). Dimensions:
+{dimensions}
+
+### Ojo
+Up to 3: contradictions, unconfirmed assumptions, risks. "—" if none."""
+
+_GOALS = {
+    "arquitectura": ("propose a solution architecture", "architecture"),
+    "venta": ("make a solid proposal", "proposal"),
+    "soporte": ("diagnose the problem", "diagnosis"),
+}
+
+
+def discovery_prompt(tr: Transcript | None, brief: str, sources: str, mode: str,
+                     language: str = "Spanish", guide: str = "", max_chars: int = 40_000) -> tuple[str, str]:
+    mode = mode if mode in DIMENSIONS else "llamada"
+    goal, short = _GOALS.get(mode, ("reach the goal of the call", "outcome"))
+    dims = "\n".join(f"- {d}" for d in DIMENSIONS[mode])
+    body = render(tr) if tr and tr.segments else ""
+    if len(body) > max_chars:
+        body = "[... earlier part trimmed ...]\n" + body[-max_chars:]
+    user = f"""## BRIEF
+{brief.strip() or "(no brief)"}
+
+## SOURCES
+{sources}
+
+## Conversation so far
+{body or "(the call has not started: judge only from the brief and sources)"}
+
+## Output format
+{_DISCOVERY_FORMAT.format(goal=goal, goal_short=short, dimensions=dims)}"""
+    system = DISCOVERY_SYSTEM.format(what=MODES.get(mode, MODES["llamada"]), language=language)
+    return with_guide(system, guide), user
+
+
+def discovery_sources(kb: KnowledgeBase | None, tr: Transcript | None, brief: str) -> str:
+    if kb is None or not kb.chunks:
+        return "(no documents loaded)"
+    query = brief[:1500] + " " + (render(tr)[-1500:] if tr and tr.segments else "")
+    return format_sources(kb.search(query, k=10, max_chars=10_000))
+
+
+class Discovery:
+    """Exploracion en vivo: se reescribe sola cada `interval_s` si hubo al
+    menos `min_new_words` nuevas; `run_now()` la pide ya (tambien sin llamada)."""
+
+    def __init__(self, llm: LLMClient, kb: KnowledgeBase | None, brief: Callable[[], str],
+                 snapshot: Callable[[], Transcript | None], mode: str = "arquitectura",
+                 language: str = "Spanish", guide: Callable[[], str] = lambda: "",
+                 interval_s: float = 90.0, min_new_words: int = 40,
+                 on_update: Callable[[str, bool], None] = lambda md, done: None,
+                 on_status: Callable[[str], None] = lambda m: None) -> None:
+        self.llm, self.kb = llm, kb
+        self.brief, self.snapshot, self.guide = brief, snapshot, guide
+        self.mode, self.language = mode, language
+        self.interval_s, self.min_new_words = interval_s, min_new_words
+        self.on_update, self.on_status = on_update, on_status
+        self.text = ""
+        self._words_at_run = 0
+        self._last_run = time.monotonic()
+        self._force = threading.Event()
+        self._stop = threading.Event()
+        self._running = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode in COPILOT_MODES
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._loop, name="speak-discovery", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run_now(self) -> None:
+        self._force.set()
+
+    def due(self, words: int, now: float) -> bool:
+        if self._force.is_set():
+            return True
+        return (self.enabled and self.interval_s > 0 and now - self._last_run >= self.interval_s
+                and words - self._words_at_run >= self.min_new_words)
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            self._force.wait(timeout=1.0)
+            if self._stop.is_set():
+                return
+            tr = self.snapshot()
+            words = sum(len(s.text.split()) for s in tr.segments) if tr else 0
+            if self.due(words, time.monotonic()):
+                self._force.clear()
+                self._words_at_run, self._last_run = words, time.monotonic()
+                self.run_once(tr)
+
+    def run_once(self, tr: Transcript | None = None) -> str:
+        if not self._running.acquire(blocking=False):
+            return self.text  # ya hay una en curso
+        try:
+            brief = self.brief()
+            system, user = discovery_prompt(tr, brief, discovery_sources(self.kb, tr, brief), self.mode,
+                                            self.language, self.guide())
+            acc = ""
+            for chunk in self.llm.stream(system, user, self._stop):
+                acc += chunk
+                self.on_update(acc, False)
+            if acc.strip():
+                self.text = acc.strip()
+                self.on_update(self.text, True)
+        except Exception as exc:
+            log.exception("exploracion")
+            self.on_status(f"exploracion: {exc}")
+        finally:
+            self._running.release()
+        return self.text
+
+
+# --- archivos ----------------------------------------------------------------
+
+DESCRIBE_SYSTEM = """You turn an image shared during a call ({what}) into searchable text. If it is an architecture or
+flow diagram, list: every component (name exactly as written, type, technology), every connection
+("A → B: protocol / data", direction as drawn), zones and boundaries (VPC, subnets, on-prem, cloud accounts,
+regions), data stores, external systems, and all other visible text. If it is something else (a table, a slide, a
+screenshot), transcribe its content faithfully. Do not guess what is not drawn; list ambiguities at the end under
+"Dudas". Write in {language}, keep names as written."""
+
+
+def describe_image(llm: LLMClient, path: Path, mode: str = "arquitectura", language: str = "Spanish") -> str:
+    system = DESCRIBE_SYSTEM.format(what=MODES.get(mode, MODES["llamada"]), language=language)
+    return llm.complete(system, f"Describe the attached image ({Path(path).name}).", images=[Path(path)]).strip()
+
+
+def attach_file(kb: KnowledgeBase, path: Path, llm_factory: Callable[[], LLMClient] | None = None,
+                mode: str = "arquitectura", language: str = "Spanish") -> str:
+    """Anade un archivo a los documentos de la llamada. Devuelve el nombre."""
+    path = Path(path)
+    if path.suffix.lower() in IMAGE_EXT:
+        if llm_factory is None:
+            raise RuntimeError("para leer imagenes hace falta el LLM")
+        text = describe_image(llm_factory(), path, mode, language)
+        kb.add_text(path.name, f"[Imagen descrita por Claude: {path.name}]\n\n{text}")
+    else:
+        kb.add_file(path)
+    return path.name
 
 
 # --- preparacion -------------------------------------------------------------
@@ -215,7 +464,7 @@ class PrepSession:
 {self.brief.strip() or "(none)"}
 
 Write the brief for the call now. Only the brief, in this format:
-{BRIEF_SECTIONS}"""
+{BRIEF_SECTIONS}{BRIEF_SECTIONS_MODE.get(self.mode, "")}"""
         return self._system(), user
 
     def _system(self) -> str:
