@@ -392,5 +392,159 @@ class LiveNotesTests(unittest.TestCase):
         self.assertNotIn("stronger answer", user)
 
 
+class KnowledgeTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _zip(self, name, files):
+        import zipfile
+
+        path = self.tmp / name
+        with zipfile.ZipFile(path, "w") as z:
+            for n, data in files.items():
+                z.writestr(n, data)
+        return path
+
+    def test_reads_docx_and_pptx(self):
+        from speak.knowledge import read_document
+
+        w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        docx = self._zip("p.docx", {"word/document.xml":
+            f'<w:document {w}><w:body><w:p><w:r><w:t>Precio: 12.000 USD</w:t></w:r></w:p>'
+            f'<w:p><w:r><w:t>Plazo 8 semanas</w:t></w:r></w:p></w:body></w:document>'})
+        self.assertEqual(read_document(docx), "Precio: 12.000 USD\n\nPlazo 8 semanas")
+        a = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+        pptx = self._zip("d.pptx", {
+            "ppt/slides/slide2.xml": f'<p:sld xmlns:p="x" {a}><a:p><a:r><a:t>Caso Acme</a:t></a:r></a:p></p:sld>',
+            "ppt/slides/slide10.xml": f'<p:sld xmlns:p="x" {a}><a:p><a:r><a:t>Cierre</a:t></a:r></a:p></p:sld>'})
+        text = read_document(pptx)
+        self.assertLess(text.index("Caso Acme"), text.index("Cierre"))  # 2 antes que 10
+
+    def test_search_folds_accents_and_plurals(self):
+        from speak.knowledge import KnowledgeBase
+
+        (self.tmp / "precios.md").write_text(
+            "La cotización del servicio de auditoría energética es 12.000 USD.", encoding="utf-8")
+        (self.tmp / "equipo.txt").write_text("El equipo lo forman tres ingenieros de planta.",
+                                            encoding="utf-8")
+        kb = KnowledgeBase(self.tmp, self.tmp / "cache.json")
+        self.assertEqual(kb.load_folder(), 2)
+        hits = kb.search("cuanto cuestan las cotizaciones de auditoria?")
+        self.assertEqual(hits[0].source, "precios.md")
+        kb.add_text("notas cliente", "El cliente pregunto por el plazo de implementacion: 8 semanas.")
+        self.assertEqual(kb.search("plazo implementación")[0].source, "notas cliente")
+        # Segunda carga: sale de la cache.
+        self.assertEqual(KnowledgeBase(self.tmp, self.tmp / "cache.json").load_folder(), 2)
+
+    def test_chunks_long_text(self):
+        from speak.knowledge import chunk_text
+
+        text = "\n\n".join(f"Parrafo {i}. " + "palabra " * 40 for i in range(20))
+        chunks = chunk_text(text, size=900)
+        self.assertGreater(len(chunks), 3)
+        self.assertTrue(all(len(c) <= 1100 for c in chunks))
+
+
+class CopilotTests(unittest.TestCase):
+    def make(self, segs, mode="venta", now=10.0, pending=0, reply="**Respuesta:** 12.000 USD [precios.md]"):
+        from speak.knowledge import KnowledgeBase
+        from speak.notes.copilot import Copilot
+
+        self.segs = segs
+        self.clock = [now]
+        self.pend = [pending]
+        kb = KnowledgeBase()
+        kb.add_text("precios.md", "El servicio de auditoria cuesta 12.000 USD.")
+        self.llm = ScriptedLLM([reply] * 5)
+        self.cop = Copilot(self.llm, kb, "Cliente: Acme", snapshot=lambda: Transcript(list(self.segs), "t"),
+                           now=lambda: self.clock[0], pending=lambda: self.pend[0], mode=mode)
+        return self.cop
+
+    def test_answers_question_after_silence_with_sources(self):
+        cop = self.make([Segment(1, 4, "How much does the energy audit cost?", "Ellos")], now=4.5)
+        self.assertIsNone(cop.step())  # 0,5 s de silencio: todavia no
+        self.clock[0] = 6.0
+        ans = cop.step()
+        self.assertIsNotNone(ans)
+        self.assertTrue(wait_for(lambda: ans.done))
+        self.assertIn("12.000", ans.text)
+        system, user = self.llm.prompts[0]
+        self.assertIn("Never invent", system)
+        self.assertIn('<source name="precios.md">', user)
+        self.assertIn("Cliente: Acme", user)
+        self.assertIsNone(cop.step())  # no la repite
+
+    def test_waits_for_pending_transcription_and_incomplete_endings(self):
+        cop = self.make([Segment(1, 4, "What would you recommend for the plant, and", "Ellos")], now=6.0)
+        self.assertIsNone(cop.step())  # termina en "and": espera mas
+        self.clock[0] = 8.0
+        self.pend[0] = 1
+        self.assertIsNone(cop.step())  # aun hay audio suyo sin transcribir
+        self.pend[0] = 0
+        self.assertIsNotNone(cop.step())
+
+    def test_continuation_after_pause_rewrites_same_answer(self):
+        cop = self.make([Segment(1, 3, "Can you tell me about pricing?", "Ellos")], now=5.0)
+        first = cop.step()
+        self.assertTrue(wait_for(lambda: first.done))
+        # Pausa larga y sigue la misma idea: se suma y se rehace.
+        self.segs.append(Segment(6, 9, "Especially for three plants in Bogota and Medellin.", "Ellos"))
+        self.clock[0] = 11.0
+        again = cop.step()
+        self.assertIs(again, first)
+        self.assertEqual(len(cop.answers), 1)
+        self.assertIn("three plants", again.question)
+        self.assertIn("pricing", again.question)
+
+    def test_me_speaking_closes_the_question_at_once(self):
+        cop = self.make([Segment(1, 3, "What is the timeline?", "Ellos"),
+                         Segment(3.2, 3.8, "So,", "Yo")], now=3.9)
+        self.assertIsNone(cop.step())  # lo tuyo no es pregunta del otro: bloque vacio
+        self.segs[:] = [Segment(1, 3, "What is the timeline?", "Ellos")]
+        self.clock[0] = 3.3
+        self.assertIsNone(cop.step())
+        cop.quiet_s = 0.2
+        self.assertIsNotNone(cop.step())
+
+    def test_statements_ignored_but_answer_now_forces(self):
+        cop = self.make([Segment(1, 4, "We already work with another provider for this.", "Ellos")], now=9.0)
+        self.assertIsNone(cop.step())
+        cop.answer_now()
+        ans = cop.step()
+        self.assertTrue(ans.forced)
+
+    def test_never_in_interview_mode(self):
+        cop = self.make([Segment(1, 4, "Tell me about a time you failed.", "Ellos")], mode="entrevista",
+                        now=9.0)
+        self.assertFalse(cop.enabled)
+        self.assertIsNone(cop.step())
+        self.assertEqual(self.llm.prompts, [])
+
+    def test_prep_session_brief(self):
+        from speak.knowledge import KnowledgeBase
+        from speak.notes.copilot import PrepSession
+
+        kb = KnowledgeBase()
+        kb.add_text("propuesta.md", "Alcance: auditoria de vapor en 3 plantas. Precio 12.000 USD.")
+        llm = ScriptedLLM(["¿Quien asiste?", "# Brief de la llamada\n## Contexto y objetivo\nAcme"])
+        prep = PrepSession(kb, mode="venta")
+        prep.chat(llm, "Reunion con Acme sobre la propuesta de vapor")
+        self.assertEqual(len(prep.messages), 2)
+        self.assertIn("propuesta.md", llm.prompts[0][1])
+        brief = prep.build_brief(llm)
+        self.assertTrue(brief.startswith("# Brief"))
+        _, user = llm.prompts[1]
+        self.assertIn("Preguntas probables", user)
+        self.assertIn("Reunion con Acme", user)
+
+
 if __name__ == "__main__":
     unittest.main()

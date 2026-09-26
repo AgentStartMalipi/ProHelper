@@ -5,6 +5,10 @@ Con "En vivo", mientras graba se ven la transcripcion, las preguntas y un
 borrador de notas que se reescribe solo (`notes/live.py`). Al detener,
 transcribe las dos pistas completas; luego "Generar notas" pasa la
 transcripcion por el analizador. Tambien importa audios y transcripciones.
+
+El panel **Copiloto** (derecha) responde en vivo lo que pregunta el otro
+lado, con el brief de **Preparar llamada** y la carpeta de conocimiento
+(`notes/copilot.py`). F8 = responder ahora.
 """
 
 from __future__ import annotations
@@ -14,7 +18,8 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -25,6 +30,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSplitter,
     QTabWidget,
     QTextBrowser,
     QVBoxLayout,
@@ -32,11 +38,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import DATA_DIR, Config
+from ..knowledge import KnowledgeBase
 from ..llm_client import make_llm
 from ..notes.analyzer import MODES, generate_notes, heuristic_report, me_share
-from ..notes.pipeline import ME, Transcript, load_any, parse_transcript_text, render
+from ..notes.copilot import COPILOT_MODES, Copilot, PrepSession
+from ..notes.pipeline import ME, THEM, Transcript, load_any, parse_transcript_text, render
 from ..transcriber import FasterWhisperSTT, make_stt
 from .bridge import LiveSignals, TaskSignals
+from .prep_window import PrepWindow, load_prep
 
 
 class NotesWindow(QMainWindow):
@@ -44,9 +53,14 @@ class NotesWindow(QMainWindow):
         super().__init__()
         self.cfg = cfg
         self.setWindowTitle("SPEAK — Notas de llamada")
-        self.resize(1000, 780)
+        self.resize(1400, 820)
         self.recorder = None
         self.live_notes = None
+        self.copilot: Copilot | None = None
+        self.prep_window: PrepWindow | None = None
+        self.kb = KnowledgeBase(cfg.kb_dir, DATA_DIR / "kb_cache.json")
+        self.prep = PrepSession(self.kb, language=cfg.NOTES_LANGUAGE)
+        load_prep(self.prep)
         self._local_stt = None
         self.folder: Path | None = None
         self.transcript: Transcript | None = None
@@ -60,7 +74,12 @@ class NotesWindow(QMainWindow):
         self.live_sig.transcript.connect(self._live_transcript)
         self.live_sig.notes.connect(self._live_notes)
         self.live_sig.status.connect(lambda m: self._status(f"⚠ {m}", error=True))
+        self.live_sig.answer.connect(self._render_copilot)
         self._build()
+        if self.prep.mode in MODES:
+            self.mode.setCurrentText(self.prep.mode)
+        # La carpeta se indexa de fondo: para cuando empiece la llamada ya esta.
+        threading.Thread(target=self._load_kb, name="speak-kb", daemon=True).start()
         self._tick = QTimer(self)
         self._tick.setInterval(200)
         self._tick.timeout.connect(self._update_rec)
@@ -77,6 +96,11 @@ class NotesWindow(QMainWindow):
         self.consent = QCheckBox("Todos los participantes saben y aceptaron que se grabe")
         row.addWidget(self.consent)
         row.addStretch(1)
+        self.btn_prep = QPushButton("🧭 Preparar llamada")
+        self.btn_prep.setToolTip("Mini chat previo: de que va la reunion, que estudiar, y un brief para el copiloto")
+        self.on_top = QCheckBox("📌 Siempre visible")
+        row.addWidget(self.btn_prep)
+        row.addWidget(self.on_top)
         lay.addLayout(row)
 
         row2 = QHBoxLayout()
@@ -130,8 +154,28 @@ class NotesWindow(QMainWindow):
         self.tabs.addTab(self.out_transcript, "Transcripcion")
         self.tabs.addTab(self.out_questions, "Preguntas detectadas")
         self.tabs.addTab(self.out_notes, "Notas")
-        lay.addWidget(self.tabs, 1)
+
+        cop = QWidget()
+        cl = QVBoxLayout(cop)
+        cl.setContentsMargins(0, 0, 0, 0)
+        head = QHBoxLayout()
+        head.addWidget(QLabel("<b>Copiloto</b>"))
+        head.addStretch(1)
+        self.btn_answer = QPushButton("⚡ Responder ahora (F8)")
+        self.btn_answer.setToolTip("Responde a lo ultimo que dijo el otro, aunque no parezca pregunta")
+        self.btn_answer.setEnabled(False)
+        head.addWidget(self.btn_answer)
+        cl.addLayout(head)
+        self.out_copilot = QTextBrowser()
+        cl.addWidget(self.out_copilot, 1)
+
+        split = QSplitter(Qt.Horizontal)
+        split.addWidget(self.tabs)
+        split.addWidget(cop)
+        split.setSizes([760, 640])
+        lay.addWidget(split, 1)
         self.setCentralWidget(central)
+        self._copilot_idle()
 
         self.btn_rec.clicked.connect(self._record)
         self.btn_stop.clicked.connect(self._stop)
@@ -139,6 +183,10 @@ class NotesWindow(QMainWindow):
         self.btn_text.clicked.connect(self._import_text)
         self.btn_notes.clicked.connect(self._generate)
         self.btn_open.clicked.connect(self._open_folder)
+        self.btn_prep.clicked.connect(self._open_prep)
+        self.btn_answer.clicked.connect(self._answer_now)
+        self.on_top.toggled.connect(self._toggle_on_top)
+        QShortcut(QKeySequence("F8"), self, activated=self._answer_now)
         self.mode.currentTextChanged.connect(self._mode_changed)
         self.out_transcript.textChanged.connect(
             lambda: self.btn_notes.setEnabled(bool(self.out_transcript.toPlainText().strip())))
@@ -196,9 +244,25 @@ class NotesWindow(QMainWindow):
             on_transcript=self.live_sig.transcript.emit, on_notes=self.live_sig.notes.emit,
             on_status=self.live_sig.status.emit)
         self.live_notes.start()
+        if self.cfg.COPILOT_ENABLED:
+            live = self.live_notes
+            self.copilot = Copilot(
+                make_llm(self.cfg), self.kb, brief=lambda: self.prep.brief,
+                snapshot=live.snapshot, now=live.now, pending=lambda: live.pending(THEM),
+                mode=self.mode.currentText(), on_answer=self.live_sig.answer.emit,
+                on_status=self.live_sig.status.emit, quiet_s=self.cfg.COPILOT_QUIET_S)
+            self.copilot.start()
+            self.btn_answer.setEnabled(True)
+            self._copilot_idle()
 
     def _stop_live(self) -> None:
         live, self.live_notes = self.live_notes, None
+        copilot, self.copilot = self.copilot, None
+        self.btn_answer.setEnabled(False)
+        if copilot is not None:
+            copilot.stop()
+            if self.folder and copilot.answers:
+                (self.folder / "copilot.md").write_text(copilot.render_log() + "\n", encoding="utf-8")
         self.out_transcript.setReadOnly(False)
         self.btn_notes.setText("✨ Generar notas")
         if live is None:
@@ -217,8 +281,63 @@ class NotesWindow(QMainWindow):
         return self._local_stt
 
     def _mode_changed(self, mode: str) -> None:
+        self.prep.mode = mode
         if self.live_notes:
             self.live_notes.mode = mode
+        if self.copilot:
+            self.copilot.mode = mode
+        if not (self.copilot and self.copilot.answers):
+            self._copilot_idle()
+
+    # --- copiloto -------------------------------------------------------------
+
+    def _load_kb(self) -> None:
+        try:
+            self.kb.load_folder()
+        except Exception as exc:
+            self.live_sig.status.emit(f"carpeta de conocimiento: {exc}")
+
+    def _open_prep(self) -> None:
+        if self.prep_window is None:
+            self.prep_window = PrepWindow(self.cfg, self.prep, self.mode)
+        self.prep_window.show()
+        self.prep_window.raise_()
+        self.prep_window.activateWindow()
+
+    def _toggle_on_top(self, on: bool) -> None:
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
+        self.show()
+
+    def _answer_now(self) -> None:
+        if self.copilot:
+            self.copilot.answer_now()
+        else:
+            self._status("El copiloto funciona mientras grabas en vivo.", error=True)
+
+    def _copilot_idle(self) -> None:
+        mode = self.mode.currentText()
+        if not self.cfg.COPILOT_ENABLED:
+            msg = "_Copiloto desactivado (COPILOT_ENABLED=false en speak/.env)._"
+        elif mode not in COPILOT_MODES:
+            msg = ("_En modo **entrevista** el copiloto no responde en vivo: seria soplarte en una "
+                   "evaluacion. Para practicar esta el simulador._")
+        else:
+            brief = "con tu brief" if self.prep.brief.strip() else "sin brief (🧭 Preparar llamada)"
+            n = len(self.kb.sources())
+            msg = (f"_Cuando el otro lado haga una pregunta, aqui aparece que responder, {brief} y "
+                   f"{n} documentos. Funciona grabando **En vivo**. **F8** responde a lo ultimo que dijo._")
+        self.out_copilot.setMarkdown(msg)
+
+    def _render_copilot(self, _answer=None) -> None:
+        if not self.copilot:
+            return
+        parts = []
+        for a in reversed(self.copilot.answers[-15:]):
+            state = "" if a.done else " ⏳"
+            parts.append(f"**[{a.at // 60:02.0f}:{a.at % 60:02.0f}] ❓ {a.question}**{state}\n\n"
+                         f"{a.text or '…'}")
+        self.out_copilot.setMarkdown("\n\n---\n\n".join(parts))
+        self.out_copilot.verticalScrollBar().setValue(0)
 
     def _live_transcript(self, tr: Transcript) -> None:
         if not self.live_notes:

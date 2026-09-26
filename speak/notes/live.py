@@ -220,6 +220,15 @@ class LiveNotes:
 
     # --- salida ---------------------------------------------------------------
 
+    def now(self) -> float:
+        """Segundos desde que empezo la llamada (el mismo reloj de los segmentos)."""
+        return self._clock()
+
+    def pending(self, speaker: str = THEM) -> int:
+        """Frases de `speaker` esperando a Whisper."""
+        stt = self._stts.get(speaker)
+        return stt.pending() if stt else 0
+
     def snapshot(self) -> Transcript:
         with self._lock:
             me, them = list(self._segs[ME]), list(self._segs[THEM])

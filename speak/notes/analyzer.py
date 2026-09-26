@@ -71,6 +71,7 @@ MODES = {
     "entrevista": "a job interview (the user, 'Yo', is the CANDIDATE)",
     "reunion": "a work meeting",
     "venta": "a sales / client call (the user, 'Yo', is on the selling/consulting side)",
+    "soporte": "a support / technical call (the user, 'Yo', is the one giving support)",
     "llamada": "a general call",
 }
 
@@ -119,6 +120,11 @@ Concrete topics to review before the next round, prioritized.
     "venta": """
 ## Objeciones y cómo responderlas
 ## Señales de compra y próximos pasos
+""",
+    "soporte": """
+## Problema reportado y diagnóstico
+Symptoms, environment, what was tried, root cause if found.
+## Solución o siguiente paso
 """,
     "reunion": "",
     "llamada": "",

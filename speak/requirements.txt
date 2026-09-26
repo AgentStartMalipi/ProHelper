@@ -4,5 +4,7 @@ sounddevice>=0.4.6
 numpy>=1.26
 # Solo para Notas de llamada: captura el audio del sistema (loopback WASAPI).
 PyAudioWPatch>=0.2.12
+# Copiloto: leer PDF de la carpeta de conocimiento.
+pypdf>=4.0
 # Opcional, solo si LLM_PROVIDER=anthropic:
 # anthropic>=0.40

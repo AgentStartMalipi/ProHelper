@@ -12,10 +12,14 @@ herramientas independientes:
    notas: preguntas, problemas, decisiones, pendientes, preguntas sin
    responder y temas para estudiar. Con **En vivo**, mientras grabas ya ves
    la transcripción, las preguntas y un borrador de notas.
+   - **Copiloto**: en ventas, reuniones, soporte y llamadas, cuando el otro
+     pregunta algo te muestra qué responder, sacado de tus documentos y del
+     brief que preparaste antes (**🧭 Preparar llamada**).
 
-En vivo, las notas solo registran lo que se dijo: no sugieren respuestas. La
-evaluación de cómo te fue y qué mejorar sale en las notas finales, cuando la
-grabación se detiene.
+En modo **entrevista** el copiloto no responde en vivo: soplarte respuestas
+mientras te evalúan engaña al entrevistador. Para eso está el simulador, que
+te prepara antes. Las notas en vivo solo registran lo que se dijo; la
+evaluación de cómo te fue sale en las notas finales.
 
 ## Arrancar
 
@@ -91,6 +95,44 @@ Cada sesión se guarda en `data/sessions/`.
 Todo queda en `data/notes/<fecha>/` (audio, `transcript.md`, `notes.md` y,
 si fue en vivo, `transcript_live.md` y `notes_live.md`).
 
+## Copiloto
+
+Tres piezas:
+
+1. **Carpeta de conocimiento** (`KB_DIR`, de serie `speak/data/knowledge`):
+   tus PDF, Word, PowerPoint, Markdown, texto y CSV de siempre (portafolio,
+   fichas técnicas, precios, casos de éxito). Se indexa sola al abrir Notas
+   de llamada y solo relee los archivos que cambiaron. Todo local.
+2. **🧭 Preparar llamada** (antes de la llamada): un mini chat. Le cuentas de
+   qué va ("mañana con el gerente de planta de Acme, quieren bajar vapor,
+   estudia la propuesta v2"), adjuntas o pegas los documentos de esa llamada
+   (propuesta, correos, notas del cliente), y te pregunta lo que falte,
+   detecta huecos y propone lo que te pueden preguntar. **✨ Armar brief**
+   escribe el brief: contexto y objetivo, mensajes clave, datos con su
+   fuente, preguntas probables con respuesta preparada, objeciones y lo que
+   no hay que prometer. El brief es editable y queda guardado
+   (`data/prep/current.json`) hasta que pulses **Nueva preparación**.
+3. **En vivo** (panel derecho de Notas de llamada, grabando con **En vivo**):
+   cuando el otro termina una pregunta, busca en el brief y los documentos y
+   Claude escribe **Respuesta** (lista para decir), hasta 3 datos de apoyo y
+   la fuente. Si no está en tus fuentes lo dice (⚠) y propone una salida
+   segura; no inventa precios, cifras ni compromisos. Medido con
+   `claude-sonnet-5`: primer texto ~3 s, respuesta completa ~6-7 s.
+   **⚡ Responder ahora (F8)** responde a lo último que dijo el otro aunque no
+   parezca pregunta. **📌 Siempre visible** deja la ventana encima de Teams o
+   Zoom. Al detener queda `copilot.md` en la carpeta de la llamada.
+
+Cuándo da la pregunta por terminada (la gente hace pausas a mitad de una
+idea): la pregunta es **todo** lo que el otro dijo desde tu última
+intervención. Responde cuando empiezas a hablar tú o tras `COPILOT_QUIET_S`
+de silencio (3 s si la frase quedó colgada: "…and", "porque", "…"), y nunca
+con audio suyo aún sin transcribir. Si ya respondió y el otro sigue, rehace la
+respuesta con la pregunta completa en el mismo sitio.
+
+La búsqueda es léxica (BM25) con tildes normalizadas y raíces de 5 letras:
+"audit" encuentra "auditoría". Si todo lo cargado cabe en el contexto (unos
+6.000 caracteres), va entero sin buscar.
+
 Por consola:
 
     .venv-speak\Scripts\python.exe -m speak.notes record --mode entrevista
@@ -111,6 +153,9 @@ Por consola:
 | `CONTEXT_WINDOW` | intercambios que viajan completos al LLM; los anteriores, en una línea |
 | `TTS_ENABLED`, `TTS_RATE` | voz del entrevistador (voz de Windows) |
 | `LIVE_NOTES_INTERVAL` | segundos entre borradores de notas en vivo (60). `0` = en vivo solo transcripción y preguntas, sin LLM |
+| `COPILOT_ENABLED` | copiloto en vivo (`true`) |
+| `KB_DIR` | carpeta de conocimiento; vacío = `speak/data/knowledge`. También se elige en Preparar llamada |
+| `COPILOT_QUIET_S` | segundos de silencio del otro para dar su pregunta por terminada (1.2) |
 
 Las API keys solo van en `.env`, nunca en el código; ⚙ Settings no las toca.
 
@@ -143,6 +188,12 @@ Micrófono ─► audio_capture (VAD por energía + segmentador de frases)
   lo transcribe con un `IncrementalTranscriber` por pista. Rellena con
   silencio según el reloj, porque el loopback de WASAPI no entrega nada
   mientras no suena nada y la última frase de "Ellos" quedaría abierta.
+- **`knowledge.py`**: lee los documentos (Word y PowerPoint directo de su
+  XML, PDF con `pypdf`), los parte en trozos de ~900 caracteres y los busca
+  con BM25. Sin modelos ni descargas: responde en milisegundos.
+- **`notes/copilot.py`**: `PrepSession` (chat y brief) y `Copilot` (cuándo
+  responder y la respuesta en streaming). `Copilot.step()` es una iteración
+  pura, así que las pruebas controlan el reloj.
 - **`simulator.py`** no depende de Qt: todo entra por una cola y lo procesa un
   solo hilo. La UI solo escucha callbacks.
 
@@ -150,11 +201,15 @@ Micrófono ─► audio_capture (VAD por energía + segmentador de frases)
 
     .venv-speak\Scripts\python.exe -m unittest discover -s speak/tests -t .
 
-Son 43 y no usan micrófono, red ni modelos. El detector de turnos cubre:
+Son 53 y no usan micrófono, red ni modelos. El detector de turnos cubre:
 pregunta corta, pregunta de varias frases, pausa dentro de una pregunta (con
 y sin puntos suspensivos), follow-up, alguien pensando en voz alta, solo
 muletillas, afirmación sin pregunta, turno reabierto, transcripción
 pendiente, tope de silencio y español. También hay pruebas de punta a punta
 del simulador con dobles (pregunta → respuesta → evaluación, aclaración a
 mitad de respuesta, botón Terminé), del pipeline de notas y de las notas en
-vivo (dos pistas a distinta frecuencia → transcripción Yo/Ellos → borrador).
+vivo (dos pistas a distinta frecuencia → transcripción Yo/Ellos → borrador),
+de la base de conocimiento (Word/PowerPoint, tildes, plurales, caché) y del
+copiloto (espera al silencio, frase colgada, audio sin transcribir, pausa a
+mitad de idea que rehace la respuesta, Responder ahora, nunca en entrevista,
+brief de la preparación).

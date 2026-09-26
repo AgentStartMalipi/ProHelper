@@ -88,6 +88,20 @@ class Config:
     # borrador de notas. 0 = en vivo solo transcripcion y preguntas, sin LLM.
     LIVE_NOTES_INTERVAL: int = 60
 
+    # --- Copiloto ----------------------------------------------------------
+    # Responde en vivo las preguntas del otro lado (venta, reunion, soporte,
+    # llamada; nunca en entrevista) con tu brief y tus documentos.
+    COPILOT_ENABLED: bool = True
+    # Carpeta de conocimiento (PDF, Word, PowerPoint, Markdown, texto, CSV).
+    # "" = speak/data/knowledge (no se sube a git: suele ser de clientes).
+    KB_DIR: str = ""
+    # Silencio (s) del otro para dar su pregunta por terminada.
+    COPILOT_QUIET_S: float = 1.2
+
+    @property
+    def kb_dir(self) -> Path:
+        return Path(self.KB_DIR) if self.KB_DIR.strip() else DATA_DIR / "knowledge"
+
     extra: dict[str, str] = field(default_factory=dict, repr=False)
 
     @property

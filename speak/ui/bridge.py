@@ -54,3 +54,4 @@ class LiveSignals(QObject):
     transcript = Signal(object)
     notes = Signal(str)
     status = Signal(str)
+    answer = Signal(object)  # notes.copilot.Answer

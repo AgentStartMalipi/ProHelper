@@ -233,17 +233,23 @@ class IncrementalTranscriber:
         self.on_error = on_error or (lambda m: log.error(m))
         self._q: queue.Queue = queue.Queue()
         self._context = ""
+        # Enviadas y aun sin texto, incluida la que se esta transcribiendo:
+        # qsize() sola no la cuenta y el que espera "no queda nada" se adelanta.
+        self._outstanding = 0
+        self._count_lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, name="speak-stt", daemon=True)
         self._thread.start()
 
     def submit(self, audio: np.ndarray, start: float, end: float) -> None:
+        with self._count_lock:
+            self._outstanding += 1
         self._q.put((audio, start, end))
 
     def reset_context(self) -> None:
         self._context = ""
 
     def pending(self) -> int:
-        return self._q.qsize()
+        return self._outstanding
 
     def close(self, discard: bool = False) -> None:
         """`discard`: tira las frases aun sin transcribir (al detener Notas en
@@ -251,7 +257,9 @@ class IncrementalTranscriber:
         if discard:
             try:
                 while True:
-                    self._q.get_nowait()
+                    if self._q.get_nowait() is not None:
+                        with self._count_lock:
+                            self._outstanding -= 1
             except queue.Empty:
                 pass
         self._q.put(None)
@@ -271,7 +279,11 @@ class IncrementalTranscriber:
             except Exception as exc:
                 log.exception("fallo la transcripcion")
                 self.on_error(f"error transcribiendo: {exc}")
-                continue
-            if text:
-                self._context = (self._context + " " + text).strip()
-                self.on_text(TranscriptEvent(text, start, end, time.time() - t0))
+                text = ""
+            try:
+                if text:
+                    self._context = (self._context + " " + text).strip()
+                    self.on_text(TranscriptEvent(text, start, end, time.time() - t0))
+            finally:
+                with self._count_lock:
+                    self._outstanding -= 1
