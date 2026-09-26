@@ -2,8 +2,12 @@
 
 Izquierda: la carpeta de conocimiento y los documentos de ESTA llamada
 (adjuntos o texto pegado). Centro: el chat, donde le cuentas de que va la
-reunion y que debe estudiar. Derecha: el brief, editable a mano; es lo que el
-copiloto lleva a cada respuesta en vivo.
+reunion y que debe estudiar. Derecha: la guia (como el pre-prompt de SCREEN,
+con plantillas) y el brief, editable a mano; los dos viajan en cada
+respuesta en vivo del copiloto.
+
+La guia NO se borra con "Nueva preparacion": suele ser quien eres y como
+trabajas, y sirve para la siguiente llamada. Esta siempre a la vista.
 
 Todo se guarda en `data/prep/current.json`: si cierras y vuelves, sigue ahi.
 """
@@ -39,7 +43,7 @@ from ..config import DATA_DIR, Config
 from ..knowledge import SUPPORTED, KnowledgeBase
 from ..llm_client import make_llm
 from ..notes.analyzer import MODES
-from ..notes.copilot import COPILOT_MODES, PrepSession
+from ..notes.copilot import COPILOT_MODES, PRESETS, PrepSession
 from .bridge import TaskSignals
 
 PREP_FILE = DATA_DIR / "prep" / "current.json"
@@ -176,9 +180,30 @@ class PrepWindow(QMainWindow):
         irow.addWidget(self.btn_send)
         ml.addLayout(irow)
 
-        # Brief
+        # Guia + brief
         right = QWidget()
         rl = QVBoxLayout(right)
+        grow = QHBoxLayout()
+        grow.addWidget(QLabel("<b>Guia del copiloto</b>"))
+        grow.addStretch(1)
+        self.presets = QComboBox()
+        self.presets.addItem("Plantillas...")
+        for preset in PRESETS:
+            lines = preset["texto"].count("\n") + 1
+            self.presets.addItem(preset["nombre"] + (f"   ({lines} lineas)" if lines > 1 else ""))
+        grow.addWidget(self.presets)
+        rl.addLayout(grow)
+        self.guide = QPlainTextEdit()
+        self.guide.setPlaceholderText(
+            "Quien eres y como quieres que responda. Ej.: Soy director comercial de Ecoeffy. "
+            "Responde en tono cercano, con una cifra y una pregunta de vuelta. "
+            "Pesa mas que el formato de serie; lo que no cambia es que no invente datos.")
+        self.guide.setMaximumHeight(140)
+        self.guide.setPlainText(self.prep.guide)
+        rl.addWidget(self.guide)
+        self.lbl_guide = QLabel()
+        self.lbl_guide.setStyleSheet("color: gray;")
+        rl.addWidget(self.lbl_guide)
         rl.addWidget(QLabel("<b>Brief</b> — el copiloto lo usa en cada respuesta. Puedes editarlo."))
         self.brief = QPlainTextEdit()
         self.brief.setPlaceholderText("Pulsa ✨ Armar brief cuando el chat tenga lo necesario "
@@ -214,6 +239,9 @@ class PrepWindow(QMainWindow):
         self.btn_stop.clicked.connect(self._cancel_task)
         self.btn_brief.clicked.connect(self._build_brief)
         self.brief.textChanged.connect(self._brief_edited)
+        self.guide.textChanged.connect(self._guide_edited)
+        self.presets.activated.connect(self._use_preset)
+        self._show_guide_name()
         QShortcut(QKeySequence("Ctrl+Return"), self.input, activated=self._send)
         self._mode_changed(self.mode.currentText())
 
@@ -347,6 +375,31 @@ class PrepWindow(QMainWindow):
             return ("brief", self.prep.build_brief(llm, on_chunk=self.sig.chunk.emit, cancel=self._cancel))
         self._run(work)
 
+    def _use_preset(self, index: int) -> None:
+        if index <= 0:
+            return
+        preset = PRESETS[index - 1]
+        self.prep.use_preset(preset)
+        self.guide.blockSignals(True)
+        self.guide.setPlainText(preset["texto"])
+        self.guide.blockSignals(False)
+        self.presets.setCurrentIndex(0)
+        self._show_guide_name()
+        save_prep(self.prep)
+
+    def _guide_edited(self) -> None:
+        self.prep.set_guide(self.guide.toPlainText())
+        self._show_guide_name()
+
+    def _show_guide_name(self) -> None:
+        if not self.prep.guide.strip():
+            text = "Sin guia: responde con el formato de serie."
+        elif self.prep.guide_name:
+            text = f"Plantilla: {self.prep.guide_name}. Se aplica ya, tambien a mitad de llamada."
+        else:
+            text = "Guia propia. Se aplica ya, tambien a mitad de llamada."
+        self.lbl_guide.setText(text)
+
     def _brief_edited(self) -> None:
         if not self._busy:
             self.prep.brief = self.brief.toPlainText()
@@ -411,5 +464,6 @@ class PrepWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.prep.brief = self.brief.toPlainText()
+        self.prep.set_guide(self.guide.toPlainText())
         save_prep(self.prep)
         super().closeEvent(event)

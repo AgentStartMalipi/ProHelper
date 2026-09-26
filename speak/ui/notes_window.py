@@ -250,7 +250,8 @@ class NotesWindow(QMainWindow):
                 make_llm(self.cfg), self.kb, brief=lambda: self.prep.brief,
                 snapshot=live.snapshot, now=live.now, pending=lambda: live.pending(THEM),
                 mode=self.mode.currentText(), on_answer=self.live_sig.answer.emit,
-                on_status=self.live_sig.status.emit, quiet_s=self.cfg.COPILOT_QUIET_S)
+                on_status=self.live_sig.status.emit, guide=lambda: self.prep.guide,
+                quiet_s=self.cfg.COPILOT_QUIET_S)
             self.copilot.start()
             self.btn_answer.setEnabled(True)
             self._copilot_idle()
@@ -324,8 +325,10 @@ class NotesWindow(QMainWindow):
         else:
             brief = "con tu brief" if self.prep.brief.strip() else "sin brief (🧭 Preparar llamada)"
             n = len(self.kb.sources())
+            guide = self.prep.guide_name or ("guia propia" if self.prep.guide.strip() else "sin guia")
             msg = (f"_Cuando el otro lado haga una pregunta, aqui aparece que responder, {brief} y "
-                   f"{n} documentos. Funciona grabando **En vivo**. **F8** responde a lo ultimo que dijo._")
+                   f"{n} documentos. Guia: **{guide}**. Funciona grabando **En vivo**. "
+                   f"**F8** responde a lo ultimo que dijo._")
         self.out_copilot.setMarkdown(msg)
 
     def _render_copilot(self, _answer=None) -> None:

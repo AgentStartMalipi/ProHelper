@@ -528,6 +528,36 @@ class CopilotTests(unittest.TestCase):
         self.assertIsNone(cop.step())
         self.assertEqual(self.llm.prompts, [])
 
+    def test_guide_goes_last_and_keeps_no_invention_rule(self):
+        cop = self.make([Segment(1, 4, "How much does the audit cost?", "Ellos")], now=9.0)
+        cop._guide = lambda: "Responde siempre en español y con una pregunta de vuelta."
+        ans = cop.step()
+        self.assertTrue(wait_for(lambda: ans.done))
+        system, _ = self.llm.prompts[0]
+        self.assertGreater(system.index("pregunta de vuelta"), system.index("Format:"))
+        self.assertTrue(system.rstrip().endswith("not in the brief or\nsources."))
+
+    def test_no_guide_leaves_prompt_untouched(self):
+        from speak.notes.copilot import ANSWER_SYSTEM, answer_prompt
+
+        system, _ = answer_prompt("q", "", "", "", "venta", guide="   ")
+        self.assertEqual(system, ANSWER_SYSTEM.format(what="a sales / client call (the user, 'Yo', is on "
+                                                           "the selling/consulting side)"))
+
+    def test_guide_presets_and_persistence(self):
+        from speak.knowledge import KnowledgeBase
+        from speak.notes.copilot import PRESETS, PrepSession
+
+        prep = PrepSession(KnowledgeBase(), mode="venta")
+        prep.use_preset(PRESETS[0])
+        self.assertEqual(prep.guide_name, PRESETS[0]["nombre"])
+        prep.set_guide(prep.guide + "\nMenciona siempre el caso Cementos X.")
+        self.assertEqual(prep.guide_name, "")  # ya no es la plantilla
+        self.assertIn("Cementos X", prep.chat_prompt("hola")[0])
+        again = PrepSession(KnowledgeBase())
+        again.load_dict(prep.to_dict())
+        self.assertEqual(again.guide, prep.guide)
+
     def test_prep_session_brief(self):
         from speak.knowledge import KnowledgeBase
         from speak.notes.copilot import PrepSession

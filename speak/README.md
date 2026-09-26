@@ -122,6 +122,22 @@ Tres piezas:
    parezca pregunta. **📌 Siempre visible** deja la ventana encima de Teams o
    Zoom. Al detener queda `copilot.md` en la carpeta de la llamada.
 
+**Guía del copiloto** (en Preparar llamada, como el pre-prompt de SCREEN):
+quién eres y cómo quieres que responda. Pesa más que el formato, el largo, el
+tono y el idioma de serie. Lo que no puede cambiar es que no invente cifras
+ni compromisos. Se aplica a las respuestas en vivo, al chat y al brief, y se
+lee en cada respuesta, así que cambiarla a mitad de llamada vale para la
+siguiente. No se borra con **Nueva preparación**. Plantillas:
+
+| Plantilla | Para qué |
+|---|---|
+| Venta consultiva B2B | Traduce los datos a lo que gana el cliente, cierra con una pregunta de descubrimiento y no ofrece descuentos |
+| Manejo de objeciones | Reconoce, responde con dato o caso, y confirma si quedó resuelto. No habla mal de la competencia |
+| Soporte técnico | Primero lo que falta para diagnosticar, luego pasos numerados; no promete fechas |
+| Reunión con gerencia | Conclusión o cifra primero, riesgos con impacto, y qué decisión se necesita |
+| Solo la frase (lo más rápido) | Una línea de máximo 25 palabras |
+| Siempre en español | Aunque el otro hable en inglés |
+
 Cuándo da la pregunta por terminada (la gente hace pausas a mitad de una
 idea): la pregunta es **todo** lo que el otro dijo desde tu última
 intervención. Responde cuando empiezas a hablar tú o tras `COPILOT_QUIET_S`
@@ -201,7 +217,7 @@ Micrófono ─► audio_capture (VAD por energía + segmentador de frases)
 
     .venv-speak\Scripts\python.exe -m unittest discover -s speak/tests -t .
 
-Son 53 y no usan micrófono, red ni modelos. El detector de turnos cubre:
+Son 56 y no usan micrófono, red ni modelos. El detector de turnos cubre:
 pregunta corta, pregunta de varias frases, pausa dentro de una pregunta (con
 y sin puntos suspensivos), follow-up, alguien pensando en voz alta, solo
 muletillas, afirmación sin pregunta, turno reabierto, transcripción
@@ -212,4 +228,4 @@ vivo (dos pistas a distinta frecuencia → transcripción Yo/Ellos → borrador)
 de la base de conocimiento (Word/PowerPoint, tildes, plurales, caché) y del
 copiloto (espera al silencio, frase colgada, audio sin transcribir, pausa a
 mitad de idea que rehace la respuesta, Responder ahora, nunca en entrevista,
-brief de la preparación).
+brief y guía de la preparación).

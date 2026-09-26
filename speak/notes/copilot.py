@@ -22,6 +22,12 @@ mitad de una idea):
 - **Responder ahora** fuerza una respuesta a lo ultimo que dijo el otro,
   aunque no parezca pregunta.
 
+**Guia** (como el pre-prompt de SCREEN): quien eres y como quieres que
+responda. Va DESPUES de las reglas de serie, asi que gana en formato, largo,
+tono e idioma; lo que no puede quitar es "no inventes cifras ni
+compromisos", que se repite al final. Se lee en cada respuesta: cambiarla a
+mitad de llamada vale para la siguiente. `PRESETS` son las plantillas.
+
 No responde en modo `entrevista`: soplar respuestas en una entrevista real
 engana al entrevistador. Para entrevistas esta el simulador.
 """
@@ -65,7 +71,64 @@ Format:
 Fuente: [<name>]"""
 
 
-def answer_prompt(question: str, brief: str, sources: str, recent: str, mode: str) -> tuple[str, str]:
+# --- guia --------------------------------------------------------------------
+
+PRESETS = [
+    {
+        "nombre": "Venta consultiva B2B",
+        "texto": """Soy del lado que vende/asesora. Responde como consultor, no como vendedor:
+- Traduce cada dato a lo que gana el cliente (ahorro, riesgo que evita, tiempo).
+- Cierra la Respuesta con UNA pregunta de descubrimiento que me ayude a entender su necesidad.
+- Si preguntan por precio o descuentos, da el dato de las fuentes pero no ofrezcas rebajas: propon revisar alcance.""",
+    },
+    {
+        "nombre": "Manejo de objeciones",
+        "texto": """Cuando el otro plantee una duda, queja o comparacion con otro proveedor, estructura la Respuesta asi:
+1. Reconoce la preocupacion en una frase (sin darle la razon ni discutir).
+2. Responde con un dato o un caso de exito de las fuentes.
+3. Termina con una pregunta que confirme si quedo resuelta.
+Nunca hables mal de la competencia.""",
+    },
+    {
+        "nombre": "Soporte tecnico",
+        "texto": """Soy quien da el soporte. Responde con:
+- Primero, si falta informacion para diagnosticar, la pregunta concreta que debo hacer (version, error exacto, desde cuando).
+- Luego pasos numerados, cortos, en el orden en que se hacen.
+- No prometas fechas de solucion ni compensaciones: ofrece escalar y hacer seguimiento.""",
+    },
+    {
+        "nombre": "Reunion con gerencia",
+        "texto": """Reunion interna con directivos. Respuestas ejecutivas:
+- Primero la conclusion o la cifra, despues el porque.
+- Si hay riesgo, dilo con su impacto y la accion propuesta.
+- Si piden una decision, di claramente que necesito de ellos.""",
+    },
+    {
+        "nombre": "Solo la frase (lo mas rapido)",
+        "texto": """Solo la linea **Respuesta:**, maximo 25 palabras, sin bullets ni linea de Fuente.
+Si no esta en las fuentes, una frase segura para ganar tiempo.""",
+    },
+    {
+        "nombre": "Siempre en español",
+        "texto": """Escribe siempre en español, aunque el otro hable en ingles: yo traduzco al hablar.
+Deja en ingles solo los terminos tecnicos que se dicen asi.""",
+    },
+]
+
+_GUIDE_HEADER = """## User's guide (follow it: it overrides the default format, length, tone and language above)
+{guide}
+
+Whatever the guide says, never invent prices, numbers, dates, names or commitments that are not in the brief or
+sources."""
+
+
+def with_guide(system: str, guide: str) -> str:
+    guide = (guide or "").strip()
+    return f"{system}\n\n{_GUIDE_HEADER.format(guide=guide)}" if guide else system
+
+
+def answer_prompt(question: str, brief: str, sources: str, recent: str, mode: str,
+                  guide: str = "") -> tuple[str, str]:
     what = MODES.get(mode, MODES["llamada"])
     user = f"""## BRIEF (prepared before the call)
 {brief.strip() or "(no brief)"}
@@ -78,7 +141,7 @@ def answer_prompt(question: str, brief: str, sources: str, recent: str, mode: st
 
 ## Answer this (said by the other side)
 {question}"""
-    return ANSWER_SYSTEM.format(what=what), user
+    return with_guide(ANSWER_SYSTEM.format(what=what), guide), user
 
 
 PREP_SYSTEM = """You help the user ("Yo") prepare for an upcoming {what}. Yo will tell you what it is about and which
@@ -114,6 +177,8 @@ class PrepSession:
     language: str = "Spanish"
     messages: list[tuple[str, str]] = field(default_factory=list)  # (rol, texto)
     brief: str = ""
+    guide: str = ""
+    guide_name: str = ""  # la plantilla de la que salio la guia, si no se toco
 
     def _context(self, query: str, max_chars: int = 12_000) -> str:
         docs = self.kb.sources()
@@ -137,7 +202,7 @@ class PrepSession:
 
 ## Yo says now
 {message}"""
-        return PREP_SYSTEM.format(what=MODES.get(self.mode, MODES["llamada"]), language=self.language), user
+        return self._system(), user
 
     def brief_prompt(self) -> tuple[str, str]:
         query = " ".join(t for _, t in self.messages)
@@ -151,7 +216,26 @@ class PrepSession:
 
 Write the brief for the call now. Only the brief, in this format:
 {BRIEF_SECTIONS}"""
-        return PREP_SYSTEM.format(what=MODES.get(self.mode, MODES["llamada"]), language=self.language), user
+        return self._system(), user
+
+    def _system(self) -> str:
+        system = PREP_SYSTEM.format(what=MODES.get(self.mode, MODES["llamada"]), language=self.language)
+        guide = self.guide.strip()
+        if not guide:
+            return system
+        # En la preparacion la guia orienta el enfoque (quien soy, como vendo) y
+        # como deben quedar las respuestas preparadas del brief.
+        return (f"{system}\n\n## User's guide (apply it to the prepared answers and the approach)\n{guide}")
+
+    def use_preset(self, preset: dict) -> None:
+        self.guide = preset["texto"]
+        self.guide_name = preset["nombre"]
+
+    def set_guide(self, text: str) -> None:
+        """Texto escrito a mano: si ya no es el de la plantilla, pierde su nombre."""
+        self.guide = text
+        match = next((p for p in PRESETS if p["texto"].strip() == text.strip()), None)
+        self.guide_name = match["nombre"] if match else ""
 
     def chat(self, llm: LLMClient, message: str, on_chunk=None, cancel=None) -> str:
         system, user = self.chat_prompt(message)
@@ -175,12 +259,15 @@ Write the brief for the call now. Only the brief, in this format:
         return self.brief
 
     def to_dict(self) -> dict:
-        return {"mode": self.mode, "messages": self.messages, "brief": self.brief}
+        return {"mode": self.mode, "messages": self.messages, "brief": self.brief,
+                "guide": self.guide, "guide_name": self.guide_name}
 
     def load_dict(self, data: dict) -> None:
         self.mode = data.get("mode", self.mode)
         self.messages = [tuple(m) for m in data.get("messages", [])]
         self.brief = data.get("brief", "")
+        self.guide = data.get("guide", "")
+        self.guide_name = data.get("guide_name", "")
 
 
 # --- en vivo -----------------------------------------------------------------
@@ -213,10 +300,12 @@ class Copilot:
                  pending: Callable[[], int] = lambda: 0, mode: str = "venta",
                  on_answer: Callable[[Answer], None] = lambda a: None,
                  on_status: Callable[[str], None] = lambda m: None,
+                 guide: Callable[[], str] | str = "",
                  quiet_s: float = 1.2, incomplete_quiet_s: float = 3.0, min_words: int = 3) -> None:
         self.llm = llm
         self.kb = kb
         self._brief = brief if callable(brief) else (lambda b=brief: b)
+        self._guide = guide if callable(guide) else (lambda g=guide: g)
         self.snapshot = snapshot
         self.now = now
         self.pending = pending
@@ -335,7 +424,7 @@ class Copilot:
         if self.kb is not None and self.kb.chunks:
             query = ans.question + " " + recent[-400:]
             sources = format_sources(self.kb.search(query, k=6, max_chars=6000))
-        system, user = answer_prompt(ans.question, self._brief(), sources, recent, self.mode)
+        system, user = answer_prompt(ans.question, self._brief(), sources, recent, self.mode, self._guide())
         acc = ""
         t0 = time.time()
         try:
