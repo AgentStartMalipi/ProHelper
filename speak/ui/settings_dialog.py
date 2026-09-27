@@ -19,6 +19,16 @@ from ..config import Config
 STT_MODELS = ["tiny", "base", "small", "medium", "distil-large-v3", "large-v3"]
 
 
+def _mme_indices() -> set[int] | None:
+    try:
+        import sounddevice as sd
+
+        apis = {i: a["name"] for i, a in enumerate(sd.query_hostapis())}
+        return {i for i, d in enumerate(sd.query_devices()) if apis.get(d["hostapi"]) == "MME"}
+    except Exception:
+        return None  # sin sounddevice: no se filtra
+
+
 class SettingsDialog(QDialog):
     def __init__(self, cfg: Config, parent=None) -> None:
         super().__init__(parent)
@@ -52,8 +62,14 @@ class SettingsDialog(QDialog):
 
         self.mic = QComboBox()
         self.mic.addItem("Predeterminado de Windows", "")
+        # SPEAK abre el microfono a 16 kHz: por WASAPI/DirectSound muchos
+        # dispositivos lo rechazan ("Invalid sample rate"); por MME Windows
+        # convierte solo. Se ofrecen solo esos (y los mismos microfonos salen
+        # una vez, no cuatro).
+        mme = _mme_indices()
         for idx, name in list_input_devices():
-            self.mic.addItem(f"{idx}: {name}", str(idx))
+            if mme is None or idx in mme:
+                self.mic.addItem(f"{idx}: {name}", str(idx))
         i = self.mic.findData(cfg.MIC_DEVICE)
         self.mic.setCurrentIndex(max(0, i))
         form.addRow("Microfono", self.mic)
