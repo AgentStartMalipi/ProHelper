@@ -306,6 +306,18 @@ class NotesTests(unittest.TestCase):
         self.assertEqual(len(kept), 1)
         self.assertIn("payments", kept[0].text)
 
+    def test_dedupe_partial_echo_but_not_real_answers(self):
+        # Caso real (parlantes, sin audifonos): el micro capto un trozo.
+        them = [Segment(3.3, 7.5, "How long would the energy audit take, and what savings can we expect?",
+                        "Ellos")]
+        me = [Segment(3.7, 5.0, "How long would the...", "Yo"),
+              Segment(4.0, 4.6, "Yes.", "Yo"),  # corto: no se toca
+              Segment(7.0, 9.0, "It takes about eight weeks from the deposit.", "Yo")]
+        kept = [s.text for s in dedupe_echo(me, them)]
+        self.assertNotIn("How long would the...", kept)
+        self.assertIn("Yes.", kept)
+        self.assertIn("It takes about eight weeks from the deposit.", kept)
+
     def test_split_whisper_segment_on_word_gaps(self):
         from types import SimpleNamespace as W
 

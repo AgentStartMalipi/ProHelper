@@ -68,14 +68,25 @@ def _jaccard(a: str, b: str) -> float:
     return len(wa & wb) / len(wa | wb) if wa and wb else 0.0
 
 
+def _contained(a: str, b: str) -> float:
+    """Fraccion de las palabras de `a` que aparecen en `b`."""
+    wa, wb = set(_WORDS.findall(a.lower())), set(_WORDS.findall(b.lower()))
+    return len(wa & wb) / len(wa) if wa else 0.0
+
+
 def dedupe_echo(me: list[Segment], them: list[Segment], threshold: float = 0.5) -> list[Segment]:
     """Quita de "Yo" lo que en realidad es la voz del otro colandose por el
     microfono (parlantes): se solapa en el tiempo con un segmento de "Ellos"
-    y comparte la mayoria de las palabras."""
+    y comparte la mayoria de las palabras. El eco a veces llega a trozos
+    ("How long would the..." de una pregunta de 12 palabras): tambien cuenta
+    si casi todas sus palabras (>= 80%, al menos 3) estan dentro de lo de Ellos."""
     kept = []
     for m in me:
+        n_words = len(_WORDS.findall(m.text))
         echo = any(
-            t.start - 1.0 <= m.end and m.start <= t.end + 1.0 and _jaccard(m.text, t.text) >= threshold
+            t.start - 1.0 <= m.end and m.start <= t.end + 1.0
+            and (_jaccard(m.text, t.text) >= threshold
+                 or (n_words >= 3 and _contained(m.text, t.text) >= 0.8))
             for t in them
         )
         if not echo:
