@@ -3,7 +3,7 @@
 Mientras `DualRecorder` graba, cada pista (microfono → "Yo", loopback →
 "Ellos") pasa tambien por aqui:
 
-    audio ─► _LiveTrack (a 16 kHz, VAD + segmentador) ─► IncrementalTranscriber
+    audio ─► _LiveTrack (a 16 kHz, VAD + segmentador) ─► LiveTranscriber (1 hilo, Ellos primero)
                                                                │
                         transcripcion en vivo (Yo/Ellos) ◄─────┘
                                    │ cada ~LIVE_NOTES_INTERVAL s con texto nuevo
@@ -16,7 +16,10 @@ salen las notas finales.
 
 El loopback de WASAPI no entrega nada mientras no suena nada; sin relleno, la
 ultima frase de "Ellos" se quedaria abierta hasta que volviera a sonar algo.
-Por eso cada pista se rellena con silencio segun el reloj.
+Por eso cada pista se rellena con silencio segun el reloj. Ojo: el hueco se
+mide con la hora en que LLEGO cada bloque, no con la hora en que se procesa;
+con la CPU ocupada el hilo se atrasa y, si se usara la hora actual, metia
+silencio falso antes de audio que ya estaba en cola (partia frases).
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ import numpy as np
 
 from ..audio_capture import EnergyVAD, UtteranceSegmenter, Utterance
 from ..llm_client import LLMClient
-from ..transcriber import IncrementalTranscriber, Segment, SpeechToText, TranscriptEvent
+from ..transcriber import Segment, SpeechToText, TranscriptEvent
 from .analyzer import live_notes_prompt
 from .pipeline import ME, THEM, Transcript, dedupe_echo
 
@@ -77,10 +80,11 @@ class _LiveTrack:
         self._thread = threading.Thread(target=self._run, name=f"speak-live-{speaker}", daemon=True)
         self._thread.start()
 
-    def push(self, audio: np.ndarray, rate: int) -> None:
-        # Llega desde el callback de audio: solo encolar.
+    def push(self, audio: np.ndarray, rate: int, t: float | None = None) -> None:
+        # Llega desde el callback de audio: solo encolar, con la hora de
+        # llegada (`t`: fin del bloque en segundos de llamada).
         try:
-            self._q.put_nowait((audio, rate))
+            self._q.put_nowait((audio, rate, self.clock() if t is None else t))
         except queue.Full:
             pass
 
@@ -100,8 +104,9 @@ class _LiveTrack:
         self._pending = self._pending[n:]
         self.fed += n
 
-    def _pad_to_clock(self, incoming: int) -> None:
-        missing = int(self.clock() * SR) - incoming - self.fed - len(self._pending)
+    def _pad_to(self, t: float, incoming: int) -> None:
+        """Rellena con silencio hasta que lo recibido cuadre con `t`."""
+        missing = int(t * SR) - incoming - self.fed - len(self._pending)
         if missing > SR // 10:
             self._feed(np.zeros(missing, np.float32))
 
@@ -116,14 +121,113 @@ class _LiveTrack:
                 return
             try:
                 if item:
-                    audio, rate = item
+                    audio, rate, t = item
                     x, self._carry = to_16k(audio, rate, self._carry)
-                    self._pad_to_clock(len(x))
+                    self._pad_to(t, len(x))
                     self._feed(x)
                 else:
-                    self._pad_to_clock(0)
+                    # Cola vacia: ahora si, la hora actual es la buena.
+                    self._pad_to(self.clock(), 0)
             except Exception:
                 log.exception("fallo procesando audio en vivo (%s)", self.speaker)
+
+
+class LiveTranscriber:
+    """Un solo hilo de Whisper para las dos pistas, con prioridad y lotes.
+
+    Medido en una laptop de 4 nucleos con la CPU ocupada (como en una llamada
+    de Teams): Whisper cuesta casi lo mismo por llamada sea cual sea el largo
+    (1 s de silencio: 1,5-3 s), porque el codificador siempre procesa una
+    ventana de 30 s. Con dos transcriptores sueltos, frase a frase, el atraso
+    crecia sin techo (106 s en una llamada de 90 s). Por eso:
+
+    - **Prioridad**: primero "Ellos" (el copiloto depende de eso); "Yo" espera.
+    - **Lotes**: las frases en cola del mismo hablante que forman un turno
+      (huecos de hasta `join_gap_s`) van en UNA llamada, hasta `max_batch_s`.
+      6 frases (27 s de audio): 12 s por separado, 3 s juntas.
+    """
+
+    def __init__(self, stt: SpeechToText, on_text: Callable[[str, TranscriptEvent], None],
+                 on_error: Callable[[str], None] = lambda m: None, priority: tuple[str, ...] = (THEM, ME),
+                 max_batch_s: float = 24.0, join_gap_s: float = 2.5) -> None:
+        self.stt = stt
+        self.on_text = on_text
+        self.on_error = on_error
+        self.priority = priority
+        self.max_batch_s = max_batch_s
+        self.join_gap_s = join_gap_s
+        self._qs: dict[str, list[tuple[np.ndarray, float, float]]] = {w: [] for w in priority}
+        self._inflight: dict[str, int] = {w: 0 for w in priority}
+        self._ctx: dict[str, str] = {w: "" for w in priority}
+        self._cv = threading.Condition()
+        self._closed = False
+        self.calls = 0
+        self._thread = threading.Thread(target=self._run, name="speak-live-stt", daemon=True)
+        self._thread.start()
+
+    def submit(self, who: str, audio: np.ndarray, start: float, end: float) -> None:
+        with self._cv:
+            self._qs[who].append((audio, start, end))
+            self._cv.notify()
+
+    def pending(self, who: str) -> int:
+        """Frases de `who` en cola o transcribiendose ahora mismo."""
+        with self._cv:
+            return len(self._qs[who]) + self._inflight[who]
+
+    def close(self, discard: bool = False) -> None:
+        with self._cv:
+            if discard:
+                for q in self._qs.values():
+                    q.clear()
+            self._closed = True
+            self._cv.notify()
+
+    def join(self, timeout: float | None = None) -> None:
+        self._thread.join(timeout)
+
+    def _take(self) -> tuple[str, list] | None:
+        with self._cv:
+            while not self._closed and not any(self._qs.values()):
+                self._cv.wait()
+            for who in self.priority:
+                q = self._qs[who]
+                if not q:
+                    continue
+                batch = [q.pop(0)]
+                total = batch[0][2] - batch[0][1]
+                while q and q[0][1] - batch[-1][2] <= self.join_gap_s \
+                        and total + (q[0][2] - q[0][1]) <= self.max_batch_s:
+                    item = q.pop(0)
+                    total += item[2] - item[1]
+                    batch.append(item)
+                self._inflight[who] = len(batch)
+                return who, batch
+            return None  # cerrado y vacio
+
+    def _run(self) -> None:
+        gap = np.zeros(SR * 3 // 10, np.float32)
+        while True:
+            taken = self._take()
+            if taken is None:
+                return
+            who, batch = taken
+            parts = []
+            for audio, _, _ in batch:
+                parts += [audio, gap]
+            t0 = time.time()
+            try:
+                text = self.stt.transcribe(np.concatenate(parts[:-1]), SR, self._ctx[who][-200:])
+                self.calls += 1
+                if text:
+                    self._ctx[who] = (self._ctx[who] + " " + text).strip()
+                    self.on_text(who, TranscriptEvent(text, batch[0][1], batch[-1][2], time.time() - t0))
+            except Exception as exc:
+                log.exception("fallo la transcripcion en vivo")
+                self.on_error(f"error transcribiendo: {exc}")
+            finally:
+                with self._cv:
+                    self._inflight[who] = 0
 
 
 class LiveNotes:
@@ -162,7 +266,10 @@ class LiveNotes:
         self._stopped = threading.Event()
         self._cancel = threading.Event()
         self._tracks: dict[str, _LiveTrack] = {}
-        self._stts: dict[str, IncrementalTranscriber] = {}
+        self._stt_worker: LiveTranscriber | None = None
+        # Cuando hablo cada uno segun el VAD (no Whisper): el copiloto sabe al
+        # instante que empezaste a responder, aunque tu texto llegue despues.
+        self._spoke: dict[str, list[float]] = {ME: [], THEM: []}
         self._notes_thread: threading.Thread | None = None
 
     # --- ciclo de vida --------------------------------------------------------
@@ -170,10 +277,8 @@ class LiveNotes:
     def start(self) -> None:
         self._t0 = time.monotonic()
         self._last_refresh = time.monotonic()
+        self._stt_worker = LiveTranscriber(self.stt, self._on_text, self.on_status)
         for who in (ME, THEM):
-            self._stts[who] = IncrementalTranscriber(
-                self.stt, SR, on_text=lambda ev, who=who: self._on_text(who, ev),
-                on_error=self.on_status)
             self._tracks[who] = _LiveTrack(who, self._on_utterance, self._clock)
         if self.llm is not None and self.refresh_s > 0:
             self._notes_thread = threading.Thread(target=self._notes_loop, name="speak-live-notes",
@@ -195,22 +300,30 @@ class LiveNotes:
         self._cancel.set()
         for track in self._tracks.values():
             track.close(timeout=2)
-        for tr in self._stts.values():
-            tr.close(discard=not wait)
+        if self._stt_worker is not None:
+            self._stt_worker.close(discard=not wait)
             if wait:
-                tr.join()
+                self._stt_worker.join()
         return self.snapshot()
 
     # --- entrada --------------------------------------------------------------
 
-    def push(self, speaker: str, audio: np.ndarray, rate: int) -> None:
-        """`speaker`: "me" o "them" (asi los nombra DualRecorder)."""
+    def push(self, speaker: str, audio: np.ndarray, rate: int, t: float | None = None) -> None:
+        """`speaker`: "me" o "them" (asi los nombra DualRecorder). `t`: fin del
+        bloque en segundos de llamada; si no se da, la hora de llegada."""
         track = self._tracks.get(ME if speaker == "me" else THEM)
         if track is not None:
-            track.push(audio, rate)
+            track.push(audio, rate, t)
 
     def _on_utterance(self, who: str, utt: Utterance) -> None:
-        self._stts[who].submit(utt.audio, utt.start, utt.end)
+        with self._lock:
+            self._spoke[who].append(utt.start)
+        self._stt_worker.submit(who, utt.audio, utt.start, utt.end)
+
+    def spoke_since(self, speaker: str, t: float) -> bool:
+        """¿`speaker` dijo algo (segun el VAD) que empezo despues de `t`?"""
+        with self._lock:
+            return any(s >= t for s in self._spoke[speaker][-5:])
 
     def _on_text(self, who: str, ev: TranscriptEvent) -> None:
         # Atraso = cuanto despues de que termino la frase aparece su texto.
@@ -234,8 +347,7 @@ class LiveNotes:
 
     def pending(self, speaker: str = THEM) -> int:
         """Frases de `speaker` esperando a Whisper."""
-        stt = self._stts.get(speaker)
-        return stt.pending() if stt else 0
+        return self._stt_worker.pending(speaker) if self._stt_worker else 0
 
     def snapshot(self) -> Transcript:
         with self._lock:

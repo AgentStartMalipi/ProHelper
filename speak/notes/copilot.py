@@ -55,7 +55,7 @@ from pathlib import Path
 
 from ..knowledge import IMAGE_EXT, KnowledgeBase, format_sources
 from ..llm_client import LLMClient
-from ..turn_detector import ends_incomplete, only_fillers, question_kind
+from ..turn_detector import _DANGLING, _WORD_RE, ends_incomplete, only_fillers, question_kind
 from .analyzer import MODES
 from .pipeline import ME, Transcript, _fmt, render
 
@@ -522,6 +522,20 @@ Write the brief for the call now. Only the brief, in this format:
 # --- en vivo -----------------------------------------------------------------
 
 
+def seems_unfinished(text: str) -> bool:
+    """Como `ends_incomplete`, pero sin fiarse del "?" de Whisper: en vivo le
+    pone signo de pregunta a los trozos ("And what would the price be for?")
+    aunque la persona solo hizo una pausa y va a seguir. Si la ultima palabra
+    pide continuacion (for, and, the, de, para...), se espera mas."""
+    if ends_incomplete(text):
+        return True
+    t = text.strip()
+    if not t.endswith("?"):
+        return False
+    words = _WORD_RE.findall(t.lower())
+    return bool(words) and words[-1] in _DANGLING
+
+
 @dataclass
 class Answer:
     id: int
@@ -547,6 +561,7 @@ class Copilot:
     def __init__(self, llm: LLMClient, kb: KnowledgeBase | None, brief: Callable[[], str] | str,
                  snapshot: Callable[[], Transcript], now: Callable[[], float],
                  pending: Callable[[], int] = lambda: 0, mode: str = "venta",
+                 me_spoke_since: Callable[[float], bool] | None = None,
                  on_answer: Callable[[Answer], None] = lambda a: None,
                  on_status: Callable[[str], None] = lambda m: None,
                  guide: Callable[[], str] | str = "",
@@ -558,6 +573,9 @@ class Copilot:
         self.snapshot = snapshot
         self.now = now
         self.pending = pending
+        # VAD de tu microfono: sabe que empezaste a responder antes de que
+        # Whisper transcriba tu frase (con la CPU ocupada eso tarda segundos).
+        self.me_spoke_since = me_spoke_since
         self.mode = mode
         self.on_answer = on_answer
         self.on_status = on_status
@@ -616,6 +634,8 @@ class Copilot:
         tr = self.snapshot()
         q = self.pending_question(tr)
         me_after = bool(tr.segments) and tr.segments[-1].speaker == ME
+        if q is not None and not me_after and self.me_spoke_since is not None:
+            me_after = self.me_spoke_since(q.end + 0.2)
         if forced:
             self._force.clear()
             if q is None:
@@ -634,7 +654,7 @@ class Copilot:
             return None
         if self.pending() > 0:
             return None
-        wait = self.incomplete_quiet_s if ends_incomplete(q.text) else self.quiet_s
+        wait = self.incomplete_quiet_s if seems_unfinished(q.text) else self.quiet_s
         if not me_after and self.now() - q.end < wait:
             return None
         return self._answer(q, tr)

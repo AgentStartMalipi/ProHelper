@@ -299,6 +299,7 @@ class NotesWindow(QMainWindow):
             self.copilot = Copilot(
                 make_llm(self.cfg), self.kb, brief=lambda: self.prep.brief,
                 snapshot=live.snapshot, now=live.now, pending=lambda: live.pending(THEM),
+                me_spoke_since=lambda t: live.spoke_since(ME, t),
                 mode=self.mode.currentText(), on_answer=self.live_sig.answer.emit,
                 on_status=self.live_sig.status.emit, guide=lambda: self.prep.guide,
                 quiet_s=self.cfg.COPILOT_QUIET_S)
