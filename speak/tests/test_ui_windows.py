@@ -195,9 +195,9 @@ class UITestCase(unittest.TestCase):
             mock.patch.object(nw, "DATA_DIR", data),
             mock.patch.object(pw, "PREP_FILE", data / "prep" / "current.json"),
             mock.patch.object(mw, "PROFILE_FILE", data / "profile.json"),
-            mock.patch.object(nw, "make_stt", lambda cfg, for_files=False, model=None: self.stt),
-            mock.patch.object(nw, "make_llm", lambda cfg: self.llm),
-            mock.patch.object(pw, "make_llm", lambda cfg: self.llm),
+            mock.patch.object(nw, "make_stt", lambda cfg, for_files=False, model=None, language=None: self.stt),
+            mock.patch.object(nw, "make_llm", lambda cfg, prewarm=False: self.llm),
+            mock.patch.object(pw, "make_llm", lambda cfg, prewarm=False: self.llm),
             mock.patch.object(recorder_mod, "DualRecorder", FakeRecorder),
             mock.patch("os.startfile", create=True),
         ]

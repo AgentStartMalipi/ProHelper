@@ -93,6 +93,12 @@ class Config:
 
     # --- Notas de llamada ------------------------------------------------
     NOTES_LANGUAGE: str = "Spanish"  # idioma en que se escriben las notas
+    # Idioma que HABLAN en la llamada (Whisper). "" = lo detecta en las
+    # primeras frases de cada hablante y lo fija (medido: detectar en cada
+    # frase es 2x mas lento y en frases cortas se equivoca; fijar "en" con una
+    # llamada en espanol la TRADUCE al ingles, 109% de error). Aparte de
+    # STT_LANGUAGE, que es el del simulador de entrevistas.
+    NOTES_STT_LANGUAGE: str = ""
     # En vivo: cada cuantos segundos (si hubo habla nueva) Claude reescribe el
     # borrador de notas. 0 = en vivo solo transcripcion y preguntas, sin LLM.
     LIVE_NOTES_INTERVAL: int = 60

@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import urllib.request
@@ -60,6 +61,24 @@ def looks_like_hallucination(text: str, duration_s: float) -> bool:
     return not t or (duration_s < 2.5 and t in _HALLUCINATIONS)
 
 
+_WORDS_RE = re.compile(r"[\wáéíóúñü']+", re.IGNORECASE)
+
+
+def looks_like_noise(text: str, prompt: str, no_speech: float) -> bool:
+    """Ruido que Whisper convirtio en texto. Medido con el micro de una webcam
+    (voz baja): con la pista de contexto, una tos o el teclado salian como
+    "Good morning. Good morning." (copia de lo ya dicho) con no_speech 0,43-0,85;
+    la voz real no paso de 0,40. Se descarta si Whisper cree que no hay voz, o
+    si lo duda y el texto solo repite la pista (contexto o glosario)."""
+    if no_speech >= 0.6:
+        return True
+    if no_speech < 0.3 or not prompt:
+        return False
+    words = _WORDS_RE.findall(text.lower())
+    seen = set(_WORDS_RE.findall(prompt.lower()))
+    return bool(words) and sum(w in seen for w in words) / len(words) >= 0.9
+
+
 def _split_on_gaps(seg, gap_s: float) -> list[Segment]:
     """Parte un segmento de faster-whisper (con .words) en los silencios."""
     words = getattr(seg, "words", None) or []
@@ -89,6 +108,15 @@ class SpeechToText(ABC):
 
     def warmup(self) -> None:
         """Carga perezosa del modelo; la UI la llama en segundo plano."""
+
+    #: Idioma fijo; None = detectar. Los backends que no lo manejan, None.
+    language: str | None = None
+
+    def transcribe_lang(self, audio: np.ndarray, sample_rate: int, prompt: str = "",
+                        language: str | None = None) -> tuple[str, str | None, float]:
+        """Como `transcribe`, con el idioma elegido por quien llama (None =
+        detectar) y devolviendo el idioma detectado y su probabilidad."""
+        return self.transcribe(audio, sample_rate, prompt), None, 0.0
 
 
 class FasterWhisperSTT(SpeechToText):
@@ -127,12 +155,16 @@ class FasterWhisperSTT(SpeechToText):
             return self._model
 
     def transcribe(self, audio: np.ndarray, sample_rate: int, prompt: str = "") -> str:
+        return self.transcribe_lang(audio, sample_rate, prompt, self.language)[0]
+
+    def transcribe_lang(self, audio: np.ndarray, sample_rate: int, prompt: str = "",
+                        language: str | None = None) -> tuple[str, str | None, float]:
         if sample_rate != 16000:
             raise STTError("faster-whisper espera audio a 16 kHz")
         duration = len(audio) / sample_rate
-        segments, _ = self._get().transcribe(
+        segments, info = self._get().transcribe(
             audio,
-            language=self.language,
+            language=language,
             beam_size=1,  # en vivo pesa mas la latencia que el ultimo 1% de WER
             vad_filter=False,  # el segmentador ya corto la frase
             condition_on_previous_text=False,
@@ -148,8 +180,12 @@ class FasterWhisperSTT(SpeechToText):
             max_new_tokens=int(duration * 8) + 16,
             no_repeat_ngram_size=4,
         )
+        segments = list(segments)
         text = " ".join(s.text.strip() for s in segments).strip()
-        return "" if looks_like_hallucination(text, duration) else text
+        no_speech = max((getattr(s, "no_speech_prob", 0.0) for s in segments), default=0.0)
+        if looks_like_hallucination(text, duration) or looks_like_noise(text, prompt, no_speech):
+            text = ""
+        return text, getattr(info, "language", None), float(getattr(info, "language_probability", 0.0) or 0.0)
 
     def transcribe_file(self, path: Path, split_gap_s: float = 0.8) -> list[Segment]:
         # Con vad_filter, Whisper junta en un segmento trozos de habla separados
@@ -217,13 +253,17 @@ class AssemblyAISTT(SpeechToText):
         ]
 
 
-def make_stt(cfg, for_files: bool = False, model: str | None = None) -> SpeechToText:
+def make_stt(cfg, for_files: bool = False, model: str | None = None,
+             language: str | None = None) -> SpeechToText:
     """El modo en vivo siempre usa el local; los archivos pueden ir a la API.
-    `model` cambia el tamano (Notas en vivo usa STT_LIVE_MODEL, mas liviano)."""
+    `model` cambia el tamano (Notas en vivo usa STT_LIVE_MODEL, mas liviano).
+    `language` reemplaza a STT_LANGUAGE ("" = detectar; Notas de llamada usa
+    NOTES_STT_LANGUAGE)."""
+    lang = cfg.STT_LANGUAGE if language is None else language
     if for_files and cfg.STT_PROVIDER == "assemblyai":
-        return AssemblyAISTT(cfg.ASSEMBLYAI_API_KEY, cfg.STT_LANGUAGE)
+        return AssemblyAISTT(cfg.ASSEMBLYAI_API_KEY, lang)
     return FasterWhisperSTT(model or cfg.STT_MODEL, cfg.STT_DEVICE, cfg.STT_COMPUTE_TYPE,
-                            cfg.STT_LANGUAGE, cfg.STT_THREADS)
+                            lang, cfg.STT_THREADS)
 
 
 # --- en vivo -----------------------------------------------------------------

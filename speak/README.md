@@ -222,7 +222,8 @@ Por consola:
 | `LLM_PROVIDER` | `claude_cli` (tu login) o `anthropic` (SDK + `API_KEY`) |
 | `LLM_MODEL` | Id completo. `claude-sonnet-5` de serie: medido, primer token ~2,5 s. Haiku 4.5 tardó 28 s en el primer token |
 | `STT_MODEL` | `base` (más rápido), `small` (de serie), `medium` / `large-v3` (más preciso, lento en CPU) |
-| `STT_LANGUAGE` | `en`, `es` o vacío (autodetectar) |
+| `STT_LANGUAGE` | idioma del simulador: `en`, `es` o vacío (autodetectar) |
+| `NOTES_STT_LANGUAGE` | idioma que se habla en Notas de llamada. Vacío (de serie): lo detecta en las primeras frases de cada hablante y lo fija. Medido: con `en`, una llamada en español sale traducida al inglés (109% de error); detectar en cada frase es 2× más lento |
 | `STT_LIVE_MODEL` | modelo de Notas en vivo (`base`). Medido en una laptop de 8 hilos: 11,8 s de voz en 8 s con `base`, 22,6 s con `small` (no da abasto en vivo), 3,9 s con `tiny` (mucho peor). La transcripción final sigue con `STT_MODEL` |
 | `STT_THREADS` | hilos de Whisper; `0` = todos (el default de la librería son 4) |
 | `MIC_DEVICE` | micrófono (índice que da `--mics`); vacío = el de Windows. Cualquier índice sirve: si el micrófono no acepta 16 kHz se abre a su frecuencia y se remuestrea |

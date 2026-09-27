@@ -29,7 +29,8 @@ def _out_dir() -> Path:
 
 
 def _process(path: Path, out: Path, cfg: Config, mode: str, use_llm: bool) -> None:
-    tr = load_any(path, lambda: make_stt(cfg, for_files=True), progress=lambda m: print(m))
+    tr = load_any(path, lambda: make_stt(cfg, for_files=True, language=cfg.NOTES_STT_LANGUAGE),
+                  progress=lambda m: print(m))
     text = render(tr)
     (out / "transcript.md").write_text(text + "\n", encoding="utf-8")
     print(f"\nTranscripcion: {len(tr.segments)} segmentos → {out / 'transcript.md'}")

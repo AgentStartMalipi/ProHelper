@@ -82,6 +82,27 @@ _REQUEST_PATTERNS = [
 ]
 _REQUEST_RE = re.compile(r"^(?:" + "|".join(_REQUEST_PATTERNS) + r")\b")
 
+# Preguntas de si/no en espanol: solo la entonacion las distingue, y Whisper
+# suele transcribirlas SIN signos ("Ustedes creen que Aurora aguanta 10 veces
+# esa carga." con base y con small). Solo patrones que casi nunca son
+# afirmacion: "tienen cinco plantas" no entra; "tienen experiencia con" si.
+_ES_YES_NO_RE = re.compile(
+    r"^(?:(?:y|pero|entonces|bueno|oye|mira)\s+)?(?:"
+    # "cre..." y no solo "creen": Whisper base oye "Usted es creing que...".
+    # Fuera "creo/creemos que": eso es opinion propia, no pregunta.
+    r"(?:\w+\s+){0,2}(?:cre(?!o\b|emos\b)\w*|piensan|piensas|consideran|considera)\s+que\b"
+    r"|(?:ustedes|usted|t[uú])\s+(?:tienen|tiene|tienes|pueden|puede|puedes|podr[ií]an|podr[ií]as?|saben|sabe|"
+    r"sabes|han|ha|has|manejan|maneja|usan|usa|ofrecen|ofrece|trabajan|trabaja|recomiendan|recomienda|"
+    r"recomiendas|hacen|hace|haces|cubren|cubre|incluyen|incluye)\b"
+    r"|(?:tienen|tiene|tienes)\s+(?:experiencia|casos|clientes|referencias|alg[uú]n|alguna|disponibilidad)\b"
+    r"|(?:pueden|puede|puedes|podr[ií]an|podr[ií]as?)\s+(?:enviar|mandar|compartir|hacer|explicar|dar|"
+    r"ayudar|mostrar|contar|revisar|incluir|ajustar|bajar|mejorar)\w*"  # enviarme, compartirnos
+    r"|(?:es|ser[ií]a|ser[aá])\s+posible\b|se\s+(?:puede|podr[ií]a)\b"
+    r"|hay\s+(?:alguna|alg[uú]n|forma|manera|posibilidad|opci[oó]n)\b"
+    r"|(?:incluye|incluyen|cubre|cubren|aplica|funciona|sirve)\s+(?:para|con|el|la|los|las|tambi[eé]n)\b"
+    r")"
+)
+
 _TAG_QUESTION_RE = re.compile(
     r"(?:,\s*(?:right|correct|yeah|ok(?:ay)?|no|verdad|cierto|s[ií])\s*\??)$"
 )
@@ -151,7 +172,7 @@ def is_question_sentence(sentence: str) -> bool:
     words = _WORD_RE.findall(s)
     if not words:
         return False
-    if _interrogative_start(words, s):
+    if _interrogative_start(words, s) or _ES_YES_NO_RE.match(s):
         return True
     return bool(_REQUEST_RE.match(s))
 
@@ -165,7 +186,7 @@ def question_kind(text: str) -> str:
         if s.endswith("?") or _TAG_QUESTION_RE.search(s):
             return "question"
         words = _WORD_RE.findall(s)
-        if _interrogative_start(words, s):
+        if _interrogative_start(words, s) or _ES_YES_NO_RE.match(s):
             return "question"
         if _REQUEST_RE.match(s):
             kind = "request"
