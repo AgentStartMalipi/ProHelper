@@ -648,7 +648,13 @@ class Copilot:
     def _intervals(self, who: str, tr: Transcript) -> list[tuple[float, float]]:
         spans = [(x.start, x.end) for x in tr.segments if x.speaker == who]
         if self.speech is not None:
-            spans += self.speech(who)
+            vad = self.speech(who)
+            if who == ME:
+                # Con parlantes tu micro capta al otro: esa "voz tuya" empieza a
+                # la vez que una frase suya (eco, ~60 ms). No es que hablaras.
+                theirs = self.speech(THEM)
+                vad = [(a, b) for a, b in vad if not any(abs(a - c) <= 0.35 for c, _ in theirs)]
+            spans += vad
         return spans
 
     def pending_question(self, tr: Transcript) -> _Pending | None:

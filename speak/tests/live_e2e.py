@@ -114,7 +114,10 @@ class Timeline:
 
 
 def build_timeline(lines: list[Line], audio: dict[str, np.ndarray], sr: int = 16000,
-                   them_gain: float = 0.5, me_gain: float = 0.5, noise: float = 0.0015) -> Timeline:
+                   them_gain: float = 0.5, me_gain: float = 0.5, noise: float = 0.0015,
+                   echo: float = 0.0) -> Timeline:
+    """`echo`: parlantes en vez de audifonos. El microfono capta la voz del
+    otro con esa ganancia y ~60 ms de retraso."""
     t = 0.0
     spans = {}
     for ln in lines:
@@ -132,6 +135,9 @@ def build_timeline(lines: list[Line], audio: dict[str, np.ndarray], sr: int = 16
         x = audio[ln.id]
         if ln.who == "them":
             them[i:i + len(x)] += x * them_gain
+            if echo:
+                j = i + int(0.06 * sr)
+                me[j:j + len(x)] += x[:len(me) - j] * echo
         else:
             me[i:i + len(x)] += x * me_gain
     return Timeline(them, me, spans)
@@ -192,7 +198,7 @@ def _fmt_list(xs):
 
 def run(model: str = "base", language: str | None = "en", real_llm: bool = False, speed: float = 1.0,
         lines: list[Line] = SCRIPT, discovery: bool = False, quiet: bool = False, threads: int = 0,
-        audio: dict[str, np.ndarray] | None = None, glossary: bool = True) -> Result:
+        audio: dict[str, np.ndarray] | None = None, glossary: bool = True, echo: float = 0.0) -> Result:
     from speak.knowledge import KnowledgeBase
     from speak.llm_client import FakeLLM, make_llm
     from speak.config import Config
@@ -202,7 +208,7 @@ def run(model: str = "base", language: str | None = "en", real_llm: bool = False
     from speak.transcriber import FasterWhisperSTT
 
     audio = audio if audio is not None else synthesize(lines)
-    tl = build_timeline(lines, audio)
+    tl = build_timeline(lines, audio, echo=echo)
     stt = FasterWhisperSTT(model, language=language or "", cpu_threads=threads)
     stt.warmup()
     stt.transcribe(np.zeros(16000, np.float32), 16000)
@@ -353,6 +359,7 @@ def main(argv=None) -> int:
     ap.add_argument("--discovery", action="store_true")
     ap.add_argument("--speed", type=float, default=1.0)
     ap.add_argument("--threads", type=int, default=0)
+    ap.add_argument("--echo", type=float, default=0.0, help="parlantes: voz del otro en tu micro (0.1-0.3)")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args(argv)
@@ -362,7 +369,7 @@ def main(argv=None) -> int:
         logging.basicConfig(level=logging.WARNING, format="%(relativeCreated)7.0f %(name)s: %(message)s")
         logging.getLogger("speak").setLevel(logging.INFO)
     res = run(args.model, args.language or None, args.real_llm, args.speed, discovery=args.discovery,
-              threads=args.threads)
+              threads=args.threads, echo=args.echo)
     print(res.summary())
     if args.show:
         print(res.transcript)

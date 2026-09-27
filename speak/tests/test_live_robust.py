@@ -189,6 +189,19 @@ class CopilotTriggerTests(unittest.TestCase):
         ans = cop.step()
         self.assertEqual(ans.question, "Can you tell me about your PCI experience?")
 
+    def test_speaker_echo_on_my_mic_is_not_me_talking(self):
+        # Parlantes: tu micro capta cada frase suya ~60 ms despues. Sin filtro,
+        # el eco de "...be for?" / "all three plants" partia la pregunta en dos
+        # y la segunda mitad (sin "?") no se respondia.
+        segs = [Segment(1, 3, "And what would the price be for", THEM),
+                Segment(5.6, 8, "all three plants in Bogota?", THEM)]
+        cop = self.make(segs, now=9.5, them=[(1, 3), (5.6, 8)], me=[(1.06, 3.1), (5.66, 8.1)])
+        ans = cop.step()
+        self.assertEqual(ans.question, "And what would the price be for all three plants in Bogota?")
+        # Una respuesta tuya de verdad (no empieza con la suya) si corta el turno.
+        cop2 = self.make(segs, now=9.5, them=[(1, 3), (5.6, 8)], me=[(3.5, 5.0)])
+        self.assertEqual(cop2.step().question, "all three plants in Bogota?")
+
     def test_new_question_does_not_cancel_previous_answer(self):
         import threading as th
 
