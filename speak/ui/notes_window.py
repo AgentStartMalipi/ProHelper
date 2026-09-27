@@ -40,12 +40,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import DATA_DIR, Config
-from ..knowledge import KnowledgeBase
+from ..knowledge import IMAGE_EXT, SUPPORTED, KnowledgeBase
 from ..llm_client import make_llm
 from ..notes.analyzer import MODES, generate_notes, heuristic_report, me_share
-from ..knowledge import IMAGE_EXT, SUPPORTED
 from ..notes.copilot import COPILOT_MODES, Copilot, Discovery, PrepSession, attach_file
-from ..notes.pipeline import ME, THEM, Transcript, load_any, parse_transcript_text, render
+from ..notes.pipeline import ME, THEM, Transcript, _fmt, load_any, parse_transcript_text, render
 from ..transcriber import FasterWhisperSTT, make_stt
 from .bridge import LiveSignals, TaskSignals
 from .prep_window import PasteDialog, PrepWindow, load_prep, save_prep
@@ -66,6 +65,8 @@ class NotesWindow(QMainWindow):
         self.prep = PrepSession(self.kb, language=cfg.NOTES_LANGUAGE)
         load_prep(self.prep)
         self._local_stt = None
+        self._stt_lock = threading.Lock()
+        self._one_off: threading.Thread | None = None
         self.folder: Path | None = None
         self.transcript: Transcript | None = None
         self._cancel: threading.Event | None = None
@@ -256,7 +257,12 @@ class NotesWindow(QMainWindow):
 
         folder = self._new_folder()
         if self.live.isChecked():
-            self._start_live()
+            try:
+                self._start_live()
+            except Exception as exc:
+                self._stop_live()
+                self._status(f"⚠ no pude iniciar el modo en vivo: {exc}", error=True)
+                return
         on_audio = self.live_notes.push if self.live_notes else None
         self.recorder = DualRecorder(folder, mic_device=self.cfg.mic_device, on_audio=on_audio)
         try:
@@ -314,29 +320,29 @@ class NotesWindow(QMainWindow):
         discovery, self.discovery = self.discovery, None
         if discovery is not None:
             discovery.stop()
-            if self.folder and discovery.text:
-                (self.folder / "exploracion.md").write_text(discovery.text + "\n", encoding="utf-8")
+            if discovery.text:
+                self._save("exploracion.md", discovery.text)
         self.btn_answer.setEnabled(False)
         if copilot is not None:
             copilot.stop()
-            if self.folder and copilot.answers:
-                (self.folder / "copilot.md").write_text(copilot.render_log() + "\n", encoding="utf-8")
+            if copilot.answers:
+                self._save("copilot.md", copilot.render_log())
         self.out_transcript.setReadOnly(False)
         self.btn_notes.setText("✨ Generar notas")
         if live is None:
             return
         tr = live.stop()
-        if self.folder:
-            if tr.segments:
-                (self.folder / "transcript_live.md").write_text(render(tr) + "\n", encoding="utf-8")
-            if live.notes:
-                (self.folder / "notes_live.md").write_text(live.notes + "\n", encoding="utf-8")
+        if tr.segments:
+            self._save("transcript_live.md", render(tr))
+        if live.notes:
+            self._save("notes_live.md", live.notes)
 
     def _live_stt(self):
         """En vivo: Whisper local con el modelo liviano (STT_LIVE_MODEL)."""
-        if self._local_stt is None:
-            self._local_stt = make_stt(self.cfg, model=self.cfg.STT_LIVE_MODEL or self.cfg.STT_MODEL)
-        return self._local_stt
+        with self._stt_lock:
+            if self._local_stt is None:
+                self._local_stt = make_stt(self.cfg, model=self.cfg.STT_LIVE_MODEL or self.cfg.STT_MODEL)
+            return self._local_stt
 
     def _preload_stt(self) -> None:
         try:
@@ -385,10 +391,13 @@ class NotesWindow(QMainWindow):
             return
         # Sin llamada en vivo: con la transcripcion cargada, si hay, o solo con
         # el brief y los documentos (¿alcanza lo que me dieron?).
+        if self._one_off is not None and self._one_off.is_alive():
+            return  # ya hay una en curso
         tr = self.transcript
         one_off = self._make_discovery(lambda: tr, 0)
-        threading.Thread(target=one_off.run_once, args=(tr,), name="speak-discovery-now",
-                         daemon=True).start()
+        self._one_off = threading.Thread(target=one_off.run_once, args=(tr,), name="speak-discovery-now",
+                                         daemon=True)
+        self._one_off.start()
 
     def _discovery_idle(self) -> None:
         mode = self.mode.currentText()
@@ -491,7 +500,7 @@ class NotesWindow(QMainWindow):
         parts = []
         for a in reversed(self.copilot.answers[-15:]):
             state = "" if a.done else " ⏳"
-            parts.append(f"**[{a.at // 60:02.0f}:{a.at % 60:02.0f}] ❓ {a.question}**{state}\n\n"
+            parts.append(f"**[{_fmt(a.at)}] ❓ {a.question}**{state}\n\n"
                          f"{a.text or '…'}")
         self.out_copilot.setMarkdown("\n\n---\n\n".join(parts))
         self.out_copilot.verticalScrollBar().setValue(0)
@@ -511,7 +520,7 @@ class NotesWindow(QMainWindow):
 
     def _live_notes(self, md: str) -> None:
         if self.live_notes:
-            self.out_notes.setMarkdown("*Borrador en vivo_\n\n" + md)
+            self.out_notes.setMarkdown("*Borrador en vivo*\n\n" + md)
 
     def _update_rec(self) -> None:
         if not self.recorder:
@@ -547,7 +556,10 @@ class NotesWindow(QMainWindow):
             self, "Transcripcion", "", "Transcripcion (*.txt *.md *.vtt)")
         if path:
             self._new_folder()
-            self._show_transcript(load_any(Path(path), self._stt))
+            try:
+                self._show_transcript(load_any(Path(path), self._stt))
+            except Exception as exc:
+                self._status(f"⚠ no pude leer {Path(path).name}: {exc}", error=True)
 
     def _stt(self):
         stt = make_stt(self.cfg, for_files=True)
@@ -561,6 +573,10 @@ class NotesWindow(QMainWindow):
 
     def _generate(self) -> None:
         if self.live_notes:
+            if self.live_notes.llm is None:
+                self._status("Las notas en vivo estan apagadas (LIVE_NOTES_INTERVAL=0): "
+                             "salen al detener, con Generar notas.", error=True)
+                return
             self.live_notes.refresh_now()
             self.tabs.setCurrentWidget(self.out_notes)
             return
@@ -590,20 +606,20 @@ class NotesWindow(QMainWindow):
                 self.sig.done.emit((kind, fn()))
             except Exception as exc:
                 self.sig.failed.emit(str(exc))
-            finally:
-                self.sig.progress.emit("")
+                self.sig.done.emit(("error", None))  # desbloquea los botones
 
         threading.Thread(target=work, name=f"speak-notes-{kind}", daemon=True).start()
 
     def _task_done(self, payload) -> None:
         kind, result = payload
         self._set_busy(False)
+        if kind == "error":
+            return
         if kind == "transcript":
             self._show_transcript(result)
         elif kind == "notes":
             self.out_notes.setMarkdown(result)
-            if self.folder:
-                (self.folder / "notes.md").write_text(result + "\n", encoding="utf-8")
+            if self._save("notes.md", result):
                 self._status(f"Notas guardadas en {self.folder / 'notes.md'}")
 
     def _show_transcript(self, tr: Transcript) -> None:
@@ -614,8 +630,7 @@ class NotesWindow(QMainWindow):
         if any(s.speaker == ME for s in tr.segments):
             report += f"\n\nHablaste el {me_share(tr):.0%} (por palabras)."
         self.out_questions.setPlainText(report)
-        if self.folder:
-            (self.folder / "transcript.md").write_text(text + "\n", encoding="utf-8")
+        self._save("transcript.md", text)
         self._status(f"Transcripcion lista: {len(tr.segments)} segmentos, hablantes: "
                      f"{', '.join(tr.speakers()) or '—'}")
         self.tabs.setCurrentWidget(self.out_transcript)
@@ -626,9 +641,20 @@ class NotesWindow(QMainWindow):
         if not busy:
             self.btn_notes.setEnabled(bool(self.out_transcript.toPlainText().strip()))
 
+    def _save(self, name: str, text: str) -> bool:
+        if not self.folder:
+            return False
+        try:
+            (self.folder / name).write_text(text + "\n", encoding="utf-8")
+            return True
+        except OSError as exc:
+            self._status(f"⚠ no pude guardar {name}: {exc}", error=True)
+            return False
+
     def _status(self, msg: str, error: bool = False) -> None:
-        if msg or error:
-            self.lbl_status.setText(msg)
+        if not msg and not error:
+            return
+        self.lbl_status.setText(msg)
         self.lbl_status.setStyleSheet("color: #c0392b;" if error else "")
 
     def _open_folder(self) -> None:
@@ -639,4 +665,8 @@ class NotesWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         if self.recorder:
             self._stop()
+        else:
+            self._stop_live()
+        if self.prep_window is not None:
+            self.prep_window.close()
         super().closeEvent(event)

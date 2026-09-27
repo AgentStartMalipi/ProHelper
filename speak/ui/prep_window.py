@@ -320,7 +320,10 @@ class PrepWindow(QMainWindow):
             self._refresh_sources()
 
     def _new(self) -> None:
-        self._cancel_task()
+        if self._busy:
+            self._cancel_task()
+            self._set_status("Deteniendo la tarea en curso; pulsa otra vez Nueva preparacion.", error=True)
+            return
         self.prep.messages.clear()
         self.prep.brief = ""
         self.kb.clear_extra()
@@ -377,9 +380,16 @@ class PrepWindow(QMainWindow):
         self.prep.brief = self.brief.toPlainText()
         llm = make_llm(self.cfg)
         self._brief_stream = True
+        self.brief.setReadOnly(True)  # se reescribe entero mientras llega
+        previous = self.prep.brief
 
         def work():
-            return ("brief", self.prep.build_brief(llm, on_chunk=self.sig.chunk.emit, cancel=self._cancel))
+            cancel = self._cancel
+            text = self.prep.build_brief(llm, on_chunk=self.sig.chunk.emit, cancel=cancel)
+            if cancel.is_set():
+                self.prep.brief = previous  # detenido: se queda el de antes
+                return ("brief_cancelled", previous)
+            return ("brief", text)
         self._run(work)
 
     def _use_preset(self, index: int) -> None:
@@ -421,7 +431,10 @@ class PrepWindow(QMainWindow):
         self._render_chat()
 
         def work():
+            disc._stop = self._cancel  # que "Detener" tambien corte la exploracion
             text = disc.run_once(None)
+            if self._cancel.is_set():
+                return ("chat", "")
             if text:
                 # Queda en la conversacion: asi entra al brief.
                 self.prep.messages.append(("assistant", "🔍 **Exploracion**\n\n" + text))
@@ -465,9 +478,17 @@ class PrepWindow(QMainWindow):
 
     def _on_done(self, payload) -> None:
         kind, result = payload
+        was_brief = getattr(self, "_brief_stream", False)
         self._busy = False
         self._streaming = ""
         self._brief_stream = False
+        self.brief.setReadOnly(False)
+        if was_brief and kind in ("error", "brief_cancelled"):
+            self.brief.blockSignals(True)
+            self.brief.setPlainText(self.prep.brief)
+            self.brief.blockSignals(False)
+            if kind == "brief_cancelled":
+                self._set_status("Detenido: se mantiene el brief anterior.")
         for b in (self.btn_send, self.btn_brief, self.btn_gaps):
             b.setEnabled(True)
         self.btn_stop.setEnabled(False)
