@@ -30,9 +30,23 @@ primera vez que pulses Start Listening se descarga el modelo de voz
 
 `run_speak.bat notes` abre directamente Notas de llamada.
 
-Diagnóstico sin interfaz (micrófono, modelo de voz y LLM):
+Diagnóstico sin interfaz (micrófono, de qué salida se graba "Ellos", modelo
+de voz y LLM):
 
     .venv-speak\Scripts\python.exe -m speak --check
+
+Probar cada micrófono con tu voz y saber cuál usar (`probar_microfonos.bat`
+hace lo mismo con doble clic; con `--auto` no hay que pulsar Enter). El
+resultado queda en `speak/data/mic_test.txt`:
+
+    .venv-speak\Scripts\python.exe -m speak --mics [--auto]
+
+Si "Ellos" no aparece en vivo: el loopback graba **después** del volumen de
+Windows (medido: con el volumen bajo, la voz llegó 37 dB por debajo). SPEAK
+le sube la ganancia sola a la pista en vivo (hasta ×100), pero si la llamada
+suena por otra salida que no es la de Windows por defecto (unos audífonos
+USB/Bluetooth), pon esa salida en `LOOPBACK_DEVICE`; `--check` lista las que
+hay.
 
 Como SCREEN, usa tu login de Claude Code: **no necesitas API key**.
 
@@ -198,6 +212,8 @@ Por consola:
 | `STT_LANGUAGE` | `en`, `es` o vacío (autodetectar) |
 | `STT_LIVE_MODEL` | modelo de Notas en vivo (`base`). Medido en una laptop de 8 hilos: 11,8 s de voz en 8 s con `base`, 22,6 s con `small` (no da abasto en vivo), 3,9 s con `tiny` (mucho peor). La transcripción final sigue con `STT_MODEL` |
 | `STT_THREADS` | hilos de Whisper; `0` = todos (el default de la librería son 4) |
+| `MIC_DEVICE` | micrófono (índice que da `--mics`); vacío = el de Windows. Cualquier índice sirve: si el micrófono no acepta 16 kHz se abre a su frecuencia y se remuestrea |
+| `LOOPBACK_DEVICE` | de qué salida se graba "Ellos": parte del nombre (`Jabra`, `Headphones`); vacío = la salida por defecto de Windows |
 | `SILENCE_THRESHOLD` | ms para cerrar una pregunta tuya (900) |
 | `ANSWER_SILENCE` | ms para cerrar una respuesta tuya (2500) |
 | `MAX_SILENCE` | tope: con este silencio siempre se cierra (6000) |

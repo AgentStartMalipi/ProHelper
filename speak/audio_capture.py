@@ -237,6 +237,7 @@ class AudioCapture:
         self.sample_rate = sample_rate
         self.blocksize = int(sample_rate * chunk_ms / 1000)
         self.device = device
+        self.device_info: dict = {}
         self.on_error = on_error or (lambda msg: log.error(msg))
         self.segmenter = UtteranceSegmenter(
             sample_rate, EnergyVAD(threshold=vad_threshold), on_event
@@ -256,18 +257,15 @@ class AudioCapture:
             if self._stream is not None:
                 return
             try:
-                import sounddevice as sd
+                import sounddevice  # noqa: F401
             except Exception as exc:  # pragma: no cover - depende del sistema
                 raise AudioError(f"no se pudo cargar sounddevice: {exc}") from exc
             try:
-                self._stream = sd.InputStream(
-                    samplerate=self.sample_rate,
-                    channels=1,
-                    dtype="float32",
-                    blocksize=self.blocksize,
-                    device=self.device,
-                    callback=self._callback,
-                )
+                chunk_ms = max(10, int(self.blocksize * 1000 / self.sample_rate))
+                self._stream, self.device_info = open_input_16k(
+                    self.device, lambda x, status: self._callback(x[:, None], len(x), None, status),
+                    block_ms=chunk_ms)
+                log.info("microfono: %s", self.device_info)
                 self._stream.start()
             except Exception as exc:
                 self._stream = None
@@ -329,6 +327,83 @@ class AudioCapture:
             except Exception as exc:  # no dejar morir el hilo en silencio
                 log.exception("fallo procesando audio")
                 self.on_error(f"error procesando audio: {exc}")
+
+
+# --- abrir un microfono cualquiera a 16 kHz ------------------------------------
+
+
+class Resampler16k:
+    """Remuestreo en streaming a 16 kHz (float32 mono), sin saltos entre
+    bloques. Multiplos exactos (48k, 32k) promedian de a grupos, que ademas
+    filtra lo que no cabe en 16 kHz; el resto (44,1k...) interpola."""
+
+    OUT = 16000
+
+    def __init__(self, rate: int) -> None:
+        self.rate = int(rate)
+        self._carry = np.zeros(0, np.float32)
+        self._last: np.ndarray | None = None
+        self._pos = 0.0  # posicion (en muestras de entrada) de la proxima salida
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=np.float32).reshape(-1)
+        if self.rate == self.OUT:
+            return x
+        if self.rate % self.OUT == 0:
+            k = self.rate // self.OUT
+            if self._carry.size:
+                x = np.concatenate([self._carry, x])
+            n = len(x) // k
+            self._carry = x[n * k:]
+            return x[:n * k].reshape(n, k).mean(axis=1).astype(np.float32)
+        buf = x if self._last is None else np.concatenate([self._last, x])
+        if len(buf) < 2:
+            self._last = buf
+            return np.zeros(0, np.float32)
+        step = self.rate / self.OUT
+        positions = np.arange(self._pos, len(buf) - 1, step)
+        out = np.interp(positions, np.arange(len(buf)), buf).astype(np.float32)
+        self._pos = (positions[-1] + step if len(positions) else self._pos) - (len(buf) - 1)
+        self._last = buf[-1:]
+        return out
+
+
+def _device_info(sd, device) -> dict:
+    info = sd.query_devices(device, "input") if device is not None else sd.query_devices(kind="input")
+    api = sd.query_hostapis(info["hostapi"])["name"]
+    return {"name": info["name"], "hostapi": api, "rate": int(info["default_samplerate"])}
+
+
+def open_input_16k(device, on_block: Callable[[np.ndarray, object], None], block_ms: int = 100):
+    """Abre `device` (indice, nombre o None = el de Windows) y entrega bloques
+    float32 mono a 16 kHz a `on_block(x, status)`, desde el hilo de audio.
+
+    Por WASAPI muchos microfonos rechazan 16 kHz ("Invalid sample rate"): en
+    ese caso se abre a su frecuencia nativa y se remuestrea aqui. Devuelve
+    (stream sin iniciar, info) con nombre, API y frecuencia real."""
+    import sounddevice as sd
+
+    info = _device_info(sd, device)
+    attempts = [16000]
+    if info["rate"] != 16000:
+        attempts.append(info["rate"])
+    last_exc: Exception | None = None
+    for rate in attempts:
+        resample = Resampler16k(rate)
+
+        def cb(indata, frames, t, status, resample=resample):
+            on_block(resample(indata[:, 0]), status)
+
+        try:
+            stream = sd.InputStream(samplerate=rate, channels=1, dtype="float32",
+                                    blocksize=int(rate * block_ms / 1000), device=device,
+                                    latency="high", callback=cb)
+        except Exception as exc:  # PortAudioError: Invalid sample rate, etc.
+            last_exc = exc
+            continue
+        info = dict(info, opened_rate=rate, resampled=rate != 16000)
+        return stream, info
+    raise AudioError(f"no pude abrir el microfono {info['name']!r}: {last_exc}")
 
 
 def list_input_devices() -> list[tuple[int, str]]:
