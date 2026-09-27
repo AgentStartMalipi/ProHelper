@@ -39,8 +39,7 @@ def _process(path: Path, out: Path, cfg: Config, mode: str, use_llm: bool) -> No
     if not use_llm:
         return
     print("\nGenerando notas...\n")
-    notes = generate_notes(make_llm(cfg), tr, mode,
-                           on_chunk=None)
+    notes = generate_notes(make_llm(cfg), tr, mode, cfg.NOTES_LANGUAGE)
     (out / "notes.md").write_text(notes + "\n", encoding="utf-8")
     print(notes)
     print(f"\nNotas → {out / 'notes.md'}")
@@ -69,7 +68,7 @@ def main(argv=None) -> int:
             print("Sin consentimiento no se graba.")
             return 1
         out = _out_dir()
-        recorder = DualRecorder(out)
+        recorder = DualRecorder(out, mic_device=cfg.mic_device)
         recorder.start()
         for w in recorder.warnings:
             print("Aviso:", w)

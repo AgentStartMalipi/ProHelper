@@ -488,13 +488,14 @@ Write the brief for the call now. Only the brief, in this format:
 
     def chat(self, llm: LLMClient, message: str, on_chunk=None, cancel=None) -> str:
         system, user = self.chat_prompt(message)
-        self.messages.append(("user", message))
         acc = ""
         for chunk in llm.stream(system, user, cancel):
             acc += chunk
             if on_chunk:
                 on_chunk(acc)
-        self.messages.append(("assistant", acc.strip()))
+        # El turno entra completo o no entra: si Claude falla, un "Yo" sin
+        # respuesta quedaria en la historia y se colaria en el brief.
+        self.messages += [("user", message), ("assistant", acc.strip())]
         return acc.strip()
 
     def build_brief(self, llm: LLMClient, on_chunk=None, cancel=None) -> str:
