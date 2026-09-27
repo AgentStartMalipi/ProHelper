@@ -251,6 +251,134 @@ class SpeechTimesTests(unittest.TestCase):
         self.assertEqual(live.speech(THEM), [])
 
 
+class StickyLanguageTests(unittest.TestCase):
+    class LangSTT(SpeechToText):
+        """Detecta "es" siempre; registra con que idioma lo llamaron."""
+
+        language = None
+
+        def __init__(self, prob=0.95):
+            self.asked = []
+            self.prob = prob
+
+        def transcribe(self, audio, sample_rate, prompt=""):
+            return "x"
+
+        def transcribe_lang(self, audio, sample_rate, prompt="", language=None):
+            self.asked.append(language)
+            return "hola", "es", self.prob
+
+        def transcribe_file(self, path):
+            return []
+
+    def run_phrases(self, stt, phrases, **kw):
+        from speak.notes.live import LiveTranscriber
+
+        lt = LiveTranscriber(stt, lambda who, ev: None, **kw)
+        for who, dur, t in phrases:
+            lt.submit(who, tone(dur), t, t + dur)
+            self.assertTrue(wait_for(lambda: lt.pending(who) == 0))
+        lt.close()
+        lt.join(5)
+        return lt
+
+    def test_detects_once_then_fixes_and_rechecks(self):
+        stt = self.LangSTT()
+        lt = self.run_phrases(stt, [(THEM, 2.5, 10.0 * k) for k in range(6)], recheck_every=4)
+        self.assertEqual(lt.language[THEM], "es")
+        # 1a: detecta (larga y segura -> fija); 2a-4a: "es"; 5a: revisa; 6a: "es".
+        self.assertEqual(stt.asked, [None, "es", "es", "es", None, "es"])
+
+    def test_short_phrase_borrows_the_other_speakers_language(self):
+        stt = self.LangSTT()
+        lt = self.run_phrases(stt, [(THEM, 2.5, 0.0), (ME, 0.8, 5.0)])
+        self.assertEqual(stt.asked, [None, "es"])
+        self.assertIsNone(lt.language[ME])  # prestado, no fijado
+
+    def test_unsure_detection_needs_two_votes(self):
+        stt = self.LangSTT(prob=0.7)
+        lt = self.run_phrases(stt, [(THEM, 2.5, 0.0), (THEM, 2.5, 10.0), (THEM, 2.5, 20.0)])
+        self.assertEqual(stt.asked, [None, None, "es"])
+        self.assertEqual(lt.language[THEM], "es")
+
+    def test_user_fixed_language_wins(self):
+        stt = self.LangSTT()
+        stt.language = "en"
+        self.run_phrases(stt, [(THEM, 2.5, 0.0), (THEM, 2.5, 10.0)])
+        self.assertEqual(stt.asked, ["en", "en"])
+
+
+class GlossaryAndSpanishTests(unittest.TestCase):
+    def test_glossary_keeps_names_and_acronyms(self):
+        from speak.notes.live import glossary_from
+
+        brief = ("# Brief de la llamada\n## Contexto y objetivo\nReunion con Acme (Juan Pérez). Migrar pagos a "
+                 "AWS con API Gateway y Aurora PostgreSQL, cumplir PCI DSS.\n- 200 TPS en Bogotá y Medellín.")
+        g = glossary_from(brief, "El caso de Cementos X bajó 11%.")
+        self.assertTrue(g.startswith("Glosario: "))
+        for term in ("AWS", "PCI", "PostgreSQL", "Aurora", "Bogotá", "Acme"):
+            self.assertIn(term, g)
+        for word in ("Brief", "Contexto", "Reunion", "El"):
+            self.assertNotIn(f" {word},", g)
+        self.assertLessEqual(len(g), 181)
+        self.assertEqual(glossary_from("", "hola a todos"), "")
+
+    def test_glossary_goes_into_the_whisper_prompt(self):
+        from speak.notes.live import LiveTranscriber
+
+        prompts = []
+
+        class Rec(SpeechToText):
+            def transcribe(self, audio, sample_rate, prompt=""):
+                prompts.append(prompt)
+                return "ok"
+
+            def transcribe_file(self, path):
+                return []
+
+        lt = LiveTranscriber(Rec(), lambda who, ev: None, glossary="Glosario: PCI, AWS.")
+        lt.submit(THEM, tone(1.0), 0, 1)
+        lt.submit(THEM, tone(1.0), 10, 11)
+        self.assertTrue(wait_for(lambda: len(prompts) == 2))
+        lt.close()
+        self.assertEqual(prompts[0], "Glosario: PCI, AWS.")
+        self.assertEqual(prompts[1], "Glosario: PCI, AWS. ok")  # + lo ya dicho por ese hablante
+
+    def test_spanish_yes_no_questions_without_question_marks(self):
+        from speak.turn_detector import question_kind
+
+        questions = ["Ustedes creen que Aurora aguanta 10 veces esa carga.",
+                     "Usted es creen que aurora aguanta 10 veces esa carga.",  # como la oye Whisper base
+                     "Usted es creing que Aurora aguanta 10 veces esa carga.",
+                     "Tienen experiencia con PCI DSS.", "Es posible hacerlo en dos semanas.",
+                     "Pueden enviarme la propuesta.", "Y hay alguna forma de bajar el precio."]
+        statements = ["Tenemos cinco plantas, tres en Colombia.", "Tienen cinco plantas.",
+                      "Hoy procesamos 200 transacciones.", "Creo que eso está bien.",
+                      "Creemos que la carga va a crecer.",
+                      "Nosotros ya trabajamos con otro proveedor."]
+        for q in questions:
+            self.assertEqual(question_kind(q), "question", q)
+        for s in statements:
+            self.assertEqual(question_kind(s), "statement", s)
+
+
+class AnswerLanguageTests(unittest.TestCase):
+    def test_answer_language_follows_the_question(self):
+        from speak.notes.copilot import answer_prompt, guess_language
+
+        self.assertEqual(guess_language("Can you tell me about your PCI experience?"), "English")
+        self.assertEqual(guess_language("¿Qué experiencia tienen con PCI?"), "Spanish")
+        self.assertEqual(guess_language("Usted es creen que Aurora aguanta 10 veces esa carga."), "Spanish")
+        # Brief y fuentes en espanol, pregunta en ingles: la respuesta en ingles.
+        system, user = answer_prompt("Do you think Aurora can handle ten times that load?",
+                                     "Reunión con Acme", "Precio: 12.000 USD", "", "venta",
+                                     guide="Siempre en español")
+        self.assertTrue(user.rstrip().endswith("Answer language: English"))
+        self.assertIn("Answer language", system)
+        # La guia va despues y puede cambiar el idioma ("Siempre en español").
+        self.assertGreater(system.index("Siempre en español"), system.index("Answer language"))
+
+
 class PrewarmTests(unittest.TestCase):
     def make(self):
         import io

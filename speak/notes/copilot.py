@@ -46,6 +46,7 @@ engana al entrevistador. Para entrevistas esta el simulador.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -75,7 +76,8 @@ Rules:
   brackets: [<name>], or [brief].
 - If the answer is not in them, start with "⚠ No está en tus fuentes." and give a safe way to respond (acknowledge,
   offer to confirm and follow up). Never invent prices, numbers, dates, names, deadlines or commitments.
-- Answer in the language the other side is speaking.
+- Write it in the language given under "Answer language" (the language of the question), even if the brief,
+  the sources or the speaker labels ("Yo", "Ellos") are in another language: Yo reads it aloud in the call.
 - Short: this is read during a live conversation. At most ~80 words.
 
 Format:
@@ -149,6 +151,22 @@ def with_guide(system: str, guide: str) -> str:
     return f"{system}\n\n{_GUIDE_HEADER.format(guide=guide)}" if guide else system
 
 
+_ES = set("que de la el los las y en con por para es se nos del una un cuánto cuánta qué cómo cuál "
+           "cuándo dónde tienen pueden ustedes usted tu su sus pero muy también hay está están son".split())
+_EN = set("the and you what how is are do does can could would of to for with your we our it this that "
+          "have has be will about which when where there".split())
+
+
+def guess_language(text: str) -> str:
+    """Idioma de la pregunta, para que la respuesta salga en el mismo. Medido:
+    con brief y fuentes en espanol, Claude contestaba en espanol preguntas
+    hechas en ingles (4 de 4) aunque el prompt pedia el idioma del otro."""
+    words = re.findall(r"[a-záéíóúñü]+", text.lower())
+    es = sum(w in _ES for w in words) + 2 * sum(c in "¿¡ñáéíóú" for c in text.lower())
+    en = sum(w in _EN for w in words)
+    return "Spanish" if es > en else "English"
+
+
 def answer_prompt(question: str, brief: str, sources: str, recent: str, mode: str,
                   guide: str = "") -> tuple[str, str]:
     what = MODES.get(mode, MODES["llamada"])
@@ -162,7 +180,9 @@ def answer_prompt(question: str, brief: str, sources: str, recent: str, mode: st
 {recent}
 
 ## Answer this (said by the other side)
-{question}"""
+{question}
+
+Answer language: {guess_language(question)}"""
     return with_guide(ANSWER_SYSTEM.format(what=what), guide), user
 
 

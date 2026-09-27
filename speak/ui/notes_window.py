@@ -276,7 +276,7 @@ class NotesWindow(QMainWindow):
     # --- en vivo --------------------------------------------------------------
 
     def _start_live(self) -> None:
-        from ..notes.live import LiveNotes
+        from ..notes.live import LiveNotes, glossary_from
 
         llm = make_llm(self.cfg) if self.cfg.LIVE_NOTES_INTERVAL > 0 else None
         self.transcript = None
@@ -292,7 +292,10 @@ class NotesWindow(QMainWindow):
             self._live_stt(), llm, self.mode.currentText(), self.cfg.NOTES_LANGUAGE,
             refresh_s=self.cfg.LIVE_NOTES_INTERVAL,
             on_transcript=self.live_sig.transcript.emit, on_notes=self.live_sig.notes.emit,
-            on_status=self.live_sig.status.emit)
+            on_status=self.live_sig.status.emit,
+            # Nombres, siglas y productos del brief y los documentos de la
+            # llamada: Whisper los escribe bien ("PCI", no "Peseí").
+            glossary=glossary_from(self.prep.brief, self.prep.guide, *self.kb.extra_texts().values()))
         self.live_notes.start()
         if self.cfg.COPILOT_ENABLED:
             live = self.live_notes
@@ -336,7 +339,8 @@ class NotesWindow(QMainWindow):
     def _live_stt(self):
         """En vivo: Whisper local con el modelo liviano (STT_LIVE_MODEL)."""
         if self._local_stt is None:
-            self._local_stt = make_stt(self.cfg, model=self.cfg.STT_LIVE_MODEL or self.cfg.STT_MODEL)
+            self._local_stt = make_stt(self.cfg, model=self.cfg.STT_LIVE_MODEL or self.cfg.STT_MODEL,
+                                       language=self.cfg.NOTES_STT_LANGUAGE)
         return self._local_stt
 
     def _preload_stt(self) -> None:
@@ -551,7 +555,7 @@ class NotesWindow(QMainWindow):
             self._show_transcript(load_any(Path(path), self._stt))
 
     def _stt(self):
-        stt = make_stt(self.cfg, for_files=True)
+        stt = make_stt(self.cfg, for_files=True, language=self.cfg.NOTES_STT_LANGUAGE)
         live = self._local_stt
         if (isinstance(stt, FasterWhisperSTT) and live is not None
                 and getattr(live, "model_name", None) == stt.model_name):

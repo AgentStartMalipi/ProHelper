@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
 import threading
 import time
+from collections import Counter
 from typing import Callable
 
 import numpy as np
@@ -62,6 +64,42 @@ def to_16k(x: np.ndarray, rate: int, carry: np.ndarray | None = None) -> tuple[n
         return np.zeros(0, np.float32), np.zeros(0, np.float32)
     out = np.interp(np.linspace(0, len(x) - 1, n), np.arange(len(x)), x)
     return out.astype(np.float32), np.zeros(0, np.float32)
+
+
+_TERM = re.compile(r"\b(?:[A-Z][A-Za-z0-9]*[A-Z0-9][A-Za-z0-9]*|[A-ZÁÉÍÓÚÑ][a-záéíóúñü]{2,})\b")
+_COMMON = {
+    # Mayusculas que no son terminos: inicio de frase, dias, meses, titulos.
+    "The", "This", "That", "What", "How", "When", "We", "Our", "They", "You", "It", "If", "And", "For",
+    "El", "La", "Los", "Las", "Un", "Una", "En", "De", "Del", "Con", "Para", "Por", "Que", "Qué", "Cómo",
+    "Cuál", "Nosotros", "Ellos", "Yo", "Hoy", "Si", "No", "Es", "Son", "Hay", "Pero", "Como", "Cuando",
+    "Contexto", "Objetivo", "Resumen", "Datos", "Preguntas", "Mensajes", "Objeciones", "Riesgos", "Brief",
+    "Lunes", "Martes", "Enero", "Febrero", "Diciembre", "Precio", "Plazo", "Cliente", "Respuesta",
+}
+
+
+def glossary_from(*texts: str, max_chars: int = 180) -> str:
+    """Terminos para darle a Whisper como pista (nombres, siglas, productos).
+
+    Medido: con "Glosario: PCI DSS, AWS, API Gateway, Aurora..." la frase
+    "¿Que experiencia tienen con PCI y con el API Gateway de AWS?" pasa de
+    "Peseí ... apigate Huawei de Auedo Lese" a bien escrita; error en espanol
+    26% -> 12% (base) y 18% -> 3% (small), sin empeorar el ingles."""
+    counts: Counter = Counter()
+    for text in texts:
+        for sentence in re.split(r"(?<=[.!?:])\s+|\n+", text or ""):
+            sentence = sentence.lstrip("#-*> 0123456789.")  # markdown: "## Titulo", "- dato"
+            for i, m in enumerate(_TERM.finditer(sentence)):
+                term = m.group(0)
+                if term in _COMMON or (i == 0 and m.start() == 0 and not any(c.isupper() for c in term[1:])):
+                    continue  # palabra comun con mayuscula por empezar la frase
+                counts[term] += 1
+    out, used = [], len("Glosario: ")
+    for term, _ in counts.most_common():
+        if used + len(term) + 2 > max_chars:
+            break
+        out.append(term)
+        used += len(term) + 2
+    return ("Glosario: " + ", ".join(out) + ".") if out else ""
 
 
 class _LiveTrack:
@@ -150,11 +188,18 @@ class LiveTranscriber:
     - **Lotes**: las frases en cola del mismo hablante que forman un turno
       (huecos de hasta `join_gap_s`) van en UNA llamada, hasta `max_batch_s`.
       6 frases (27 s de audio): 12 s por separado, 3 s juntas.
+    - **Idioma fijo por hablante** (si el STT no trae uno): se detecta en las
+      primeras frases y se fija; cada `recheck_every` frases se vuelve a
+      mirar por si la llamada cambio de idioma. Medido con Whisper base:
+      detectar en cada frase es 2x mas lento y en frases cortas se equivoca
+      ("Quanto questa..."); un idioma fijo equivocado traduce en vez de
+      transcribir.
     """
 
     def __init__(self, stt: SpeechToText, on_text: Callable[[str, TranscriptEvent], None],
                  on_error: Callable[[str], None] = lambda m: None, priority: tuple[str, ...] = (THEM, ME),
-                 max_batch_s: float = 24.0, join_gap_s: float = 2.5) -> None:
+                 max_batch_s: float = 24.0, join_gap_s: float = 2.5, recheck_every: int = 10,
+                 glossary: str = "") -> None:
         self.stt = stt
         self.on_text = on_text
         self.on_error = on_error
@@ -164,6 +209,11 @@ class LiveTranscriber:
         self._qs: dict[str, list[tuple[np.ndarray, float, float]]] = {w: [] for w in priority}
         self._inflight: dict[str, int] = {w: 0 for w in priority}
         self._ctx: dict[str, str] = {w: "" for w in priority}
+        self.recheck_every = recheck_every
+        self.glossary = glossary  # pista fija para Whisper (terminos del brief y los documentos)
+        self.language: dict[str, str | None] = {w: None for w in priority}  # fijado por hablante
+        self._votes: dict[str, list[str]] = {w: [] for w in priority}
+        self._since_check: dict[str, int] = {w: 0 for w in priority}
         self._cv = threading.Condition()
         self._closed = False
         self.calls = 0
@@ -210,6 +260,39 @@ class LiveTranscriber:
                 return who, batch
             return None  # cerrado y vacio
 
+    def _language_for(self, who: str, duration: float) -> str | None:
+        """Idioma con el que transcribir esta frase; None = que Whisper lo detecte."""
+        fixed = getattr(self.stt, "language", None)
+        if fixed:
+            return fixed  # lo fijo el usuario
+        mine = self.language[who]
+        other = next((lang for w, lang in self.language.items() if w != who and lang), None)
+        if mine:
+            self._since_check[who] += 1
+            if self._since_check[who] >= self.recheck_every and duration >= 2.0:
+                self._since_check[who] = 0
+                return None  # revisar de vez en cuando (y solo con frases largas)
+            return mine
+        if duration < 1.5 and other:
+            return other  # frase corta: detectar aqui falla; lo mas probable es el del otro
+        return None
+
+    def _learn_language(self, who: str, found: str | None, prob: float, duration: float) -> None:
+        if not found or prob < 0.5 or duration < 1.0:
+            return
+        votes = self._votes[who]
+        votes.append(found)
+        del votes[:-3]
+        current = self.language[who]
+        if current is None:
+            # Se fija con dos frases que coinciden, o una larga y muy segura.
+            if votes.count(found) >= 2 or (prob >= 0.9 and duration >= 2.0):
+                self.language[who] = found
+                log.info("en vivo %s: idioma %s (%.0f%%)", who, found, prob * 100)
+        elif found != current and votes[-2:] == [found, found] and prob >= 0.7:
+            self.language[who] = found  # la llamada cambio de idioma
+            log.info("en vivo %s: cambio de idioma a %s", who, found)
+
     def _run(self) -> None:
         gap = np.zeros(SR * 3 // 10, np.float32)
         while True:
@@ -222,7 +305,12 @@ class LiveTranscriber:
                 parts += [audio, gap]
             t0 = time.time()
             try:
-                text = self.stt.transcribe(np.concatenate(parts[:-1]), SR, self._ctx[who][-200:])
+                audio = np.concatenate(parts[:-1])
+                lang = self._language_for(who, len(audio) / SR)
+                prompt = f"{self.glossary} {self._ctx[who][-200:]}".strip()
+                text, found, prob = self.stt.transcribe_lang(audio, SR, prompt, lang)
+                if lang is None or lang != found:
+                    self._learn_language(who, found, prob, len(audio) / SR)
                 self.calls += 1
                 if text:
                     self._ctx[who] = (self._ctx[who] + " " + text).strip()
@@ -249,8 +337,9 @@ class LiveNotes:
                  on_transcript: Callable[[Transcript], None] = lambda tr: None,
                  on_notes: Callable[[str], None] = lambda md: None,
                  on_status: Callable[[str], None] = lambda msg: None,
-                 clock: Callable[[], float] | None = None) -> None:
+                 clock: Callable[[], float] | None = None, glossary: str = "") -> None:
         self.stt = stt
+        self.glossary = glossary
         self.llm = llm
         self.mode = mode
         self.language = language
@@ -282,7 +371,7 @@ class LiveNotes:
     def start(self) -> None:
         self._t0 = time.monotonic()
         self._last_refresh = time.monotonic()
-        self._stt_worker = LiveTranscriber(self.stt, self._on_text, self.on_status)
+        self._stt_worker = LiveTranscriber(self.stt, self._on_text, self.on_status, glossary=self.glossary)
         for who in (ME, THEM):
             self._tracks[who] = _LiveTrack(who, self._on_utterance, self._clock)
         if self.llm is not None and self.refresh_s > 0:

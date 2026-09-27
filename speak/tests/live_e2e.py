@@ -191,7 +191,8 @@ def _fmt_list(xs):
 
 
 def run(model: str = "base", language: str | None = "en", real_llm: bool = False, speed: float = 1.0,
-        lines: list[Line] = SCRIPT, discovery: bool = False, quiet: bool = False, threads: int = 0) -> Result:
+        lines: list[Line] = SCRIPT, discovery: bool = False, quiet: bool = False, threads: int = 0,
+        audio: dict[str, np.ndarray] | None = None, glossary: bool = True) -> Result:
     from speak.knowledge import KnowledgeBase
     from speak.llm_client import FakeLLM, make_llm
     from speak.config import Config
@@ -200,7 +201,7 @@ def run(model: str = "base", language: str | None = "en", real_llm: bool = False
     from speak.notes.pipeline import ME, THEM
     from speak.transcriber import FasterWhisperSTT
 
-    audio = synthesize(lines)
+    audio = audio if audio is not None else synthesize(lines)
     tl = build_timeline(lines, audio)
     stt = FasterWhisperSTT(model, language=language or "", cpu_threads=threads)
     stt.warmup()
@@ -212,7 +213,11 @@ def run(model: str = "base", language: str | None = "en", real_llm: bool = False
         return (time.monotonic() - t_start[0]) * speed
 
     lags: list[float] = []
-    live = LiveNotes(stt, None, mode="venta", clock=clock)
+    from speak.notes.live import glossary_from
+
+    brief = "Cliente Acme: auditoria de vapor y plataforma de pagos en AWS (API Gateway, Aurora, PCI DSS)."
+    live = LiveNotes(stt, None, mode="venta", clock=clock,
+                     glossary=glossary_from(brief, KB_TEXT) if glossary else "")
     orig_on_text = live._on_text
 
     def on_text(who, ev):
@@ -230,7 +235,7 @@ def run(model: str = "base", language: str | None = "en", real_llm: bool = False
         if a.text and a.id not in first_text:
             first_text[a.id] = clock()
 
-    cop = Copilot(llm, kb, "Cliente Acme: auditoria de vapor y plataforma de pagos.", snapshot=live.snapshot,
+    cop = Copilot(llm, kb, brief, snapshot=live.snapshot,
                   now=live.now, pending=lambda: live.pending(THEM), mode="venta", on_answer=on_answer,
                   speech=live.speech)
     orig_answer = cop._answer
@@ -310,7 +315,9 @@ def run(model: str = "base", language: str | None = "en", real_llm: bool = False
         line = min(cands, key=lambda ln: abs(tl.spans[ln.id][1] - ev["q_end"])) if cands else None
         end = tl.spans[line.id][1] if line else ev["q_end"]
         final = last_event_of[ev["id"]] == k
+        final_text = next((a.text for a in cop.answers if a.id == ev["id"]), "")
         rec = dict(ev, line=line.id if line else None, trigger_after_end=ev["at"] - end,
+                   answer=final_text if final else "",
                    first_text_after_end=(first_text[ev["id"]] - end) if final and ev["id"] in first_text
                    else None)
         answers.append(rec)
@@ -325,8 +332,12 @@ def run(model: str = "base", language: str | None = "en", real_llm: bool = False
     false += [f"prematura:{p}" for p in premature]
     missed = [e for e in expected if e not in hits]
     # t04+t05 deben quedar en UNA respuesta (reescrita), no en dos.
-    ids_rewrite = {a["id"] for a in answers if a.get("line") in ("t04", "t05")}
-    rewrite_ok = len(ids_rewrite) == 1 and any(a.get("line") == "t05" for a in answers)
+    # La pregunta partida por una pausa (la linea "rewrite" y la anterior)
+    # debe quedar en UNA respuesta, no en dos.
+    k = next(i for i, ln in enumerate(lines) if ln.expect == "rewrite")
+    pair = (lines[k - 1].id, lines[k].id)
+    ids_rewrite = {a["id"] for a in answers if a.get("line") in pair}
+    rewrite_ok = len(ids_rewrite) == 1 and any(a.get("line") == pair[1] for a in answers)
     from speak.notes.pipeline import render
     return Result(model, wer(ref_them, hyp_them), wer(ref_me, hyp_me), lags, answers, expected,
                   sorted(set(hits)), missed, false, rewrite_ok, render(tr), disc.text if disc else "")
