@@ -63,6 +63,10 @@ class Config:
 
     # --- Audio / turnos --------------------------------------------------
     MIC_DEVICE: str = ""  # "" = el predeterminado de Windows; si no, el indice
+    # Notas de llamada: de que salida se graba "Ellos" (loopback). "" = la
+    # salida por defecto de Windows; si no, parte del nombre (p. ej.
+    # "Headphones", "Realtek", "Jabra"). `python -m speak --check` las lista.
+    LOOPBACK_DEVICE: str = ""
     SAMPLE_RATE: int = 16000
     CHUNK_MS: int = 30
     # Silencio (ms) para cerrar una pregunta completa (p. ej. tu aclaracion
