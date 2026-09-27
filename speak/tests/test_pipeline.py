@@ -194,6 +194,21 @@ EVAL = "## FEEDBACK\nScore: 3/5\n- ok\n## QUICK ANSWER\n- sort first\n## DETAILE
 
 
 class SimulatorTests(unittest.TestCase):
+    def setUp(self):
+        # Las sesiones van a una carpeta temporal, no a speak/data/sessions
+        # (ahi estan las del usuario).
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        import speak.simulator as sim
+
+        self._tmp = tempfile.TemporaryDirectory()
+        patcher = mock.patch.object(sim, "DATA_DIR", Path(self._tmp.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._tmp.cleanup)
+
     def make(self, stt_texts, llm_replies):
         cfg = Config()
         cfg.ANSWER_SILENCE = 1200

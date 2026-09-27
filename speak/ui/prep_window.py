@@ -96,6 +96,7 @@ class PrepWindow(QMainWindow):
         self.resize(1250, 780)
         self._busy = False
         self._streaming = ""
+        self._pending_user = ""  # tu mensaje, visible mientras llega la respuesta
         self.sig = TaskSignals()
         self.sig.chunk.connect(self._on_chunk)
         self.sig.done.connect(self._on_done)
@@ -350,6 +351,8 @@ class PrepWindow(QMainWindow):
         for role, text in self.prep.messages:
             who = "🧑 **Tu**" if role == "user" else "🤖 **Asistente**"
             parts.append(f"{who}\n\n{text}")
+        if self._pending_user:
+            parts.append(f"🧑 **Tu**\n\n{self._pending_user}")
         if self._streaming:
             parts.append(f"🤖 **Asistente**\n\n{self._streaming}")
         if not parts:
@@ -366,9 +369,9 @@ class PrepWindow(QMainWindow):
         self.input.clear()
         llm = make_llm(self.cfg)
         self._streaming = "…"
-        self.prep.messages.append(("user", msg))  # para verlo ya; chat() lo vuelve a anadir
+        # chat() solo lo anade a la historia cuando la respuesta termina bien.
+        self._pending_user = msg
         self._render_chat()
-        self.prep.messages.pop()
 
         def work():
             return ("chat", self.prep.chat(llm, msg, on_chunk=self.sig.chunk.emit, cancel=self._cancel))
@@ -481,6 +484,10 @@ class PrepWindow(QMainWindow):
         was_brief = getattr(self, "_brief_stream", False)
         self._busy = False
         self._streaming = ""
+        if kind != "chat" and self._pending_user and not self.input.toPlainText().strip():
+            # Fallo: el mensaje vuelve al cuadro para no perderlo.
+            self.input.setPlainText(self._pending_user)
+        self._pending_user = ""
         self._brief_stream = False
         self.brief.setReadOnly(False)
         if was_brief and kind in ("error", "brief_cancelled"):

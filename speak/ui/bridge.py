@@ -57,3 +57,4 @@ class LiveSignals(QObject):
     answer = Signal(object)  # notes.copilot.Answer
     discovery = Signal(str, bool)  # markdown, terminado
     attached = Signal(str)  # aviso al terminar de anadir archivos
+    recording = Signal(object)  # (grabadora, excepcion o None) al terminar de abrir el audio

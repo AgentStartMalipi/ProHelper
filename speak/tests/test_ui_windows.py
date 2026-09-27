@@ -143,6 +143,7 @@ class FakeRecorder:
 
     instances: list["FakeRecorder"] = []
     fail = False
+    open_delay = 0.0  # PyAudio real tarda 2-3 s en abrir el loopback
 
     def __init__(self, folder, mic_device=None, capture_system=True, on_audio=None):
         self.folder = Path(folder)
@@ -158,6 +159,8 @@ class FakeRecorder:
         return time.monotonic() - self._t0 if self._t0 else 0.0
 
     def start(self) -> None:
+        if FakeRecorder.open_delay:
+            time.sleep(FakeRecorder.open_delay)
         if FakeRecorder.fail:
             raise recorder_mod.RecorderError("no pude abrir el microfono: prueba")
         self.folder.mkdir(parents=True, exist_ok=True)
@@ -225,6 +228,8 @@ class UITestCase(unittest.TestCase):
         w.live.setChecked(True)
         QTest.mouseClick(w.btn_rec, Qt.LeftButton)
         self.assertTrue(w.recorder is not None and w.live_notes is not None, w.lbl_status.text())
+        # El audio se abre en un hilo: esperar a que termine de arrancar.
+        self.assertTrue(pump(lambda: w.btn_stop.isEnabled()), w.lbl_status.text())
         return FakeRecorder.instances[-1]
 
 
@@ -232,6 +237,36 @@ class UITestCase(unittest.TestCase):
 
 
 class NotesWindowTests(UITestCase):
+    def test_slow_audio_open_keeps_window_responsive(self):
+        FakeRecorder.open_delay = 1.5
+        try:
+            w = self.notes()
+            w.consent.setChecked(True)
+            w.live.setChecked(False)
+            t0 = time.monotonic()
+            QTest.mouseClick(w.btn_rec, Qt.LeftButton)
+            self.assertLess(time.monotonic() - t0, 0.5)  # el clic no bloquea
+            self.assertIn("Abriendo", w.lbl_status.text())
+            self.assertFalse(w.btn_rec.isEnabled())
+            self.assertFalse(w.btn_stop.isEnabled())
+            self.assertTrue(pump(lambda: w.btn_stop.isEnabled(), timeout=5))
+            self.assertIn("Grabando", w.lbl_status.text())
+        finally:
+            FakeRecorder.open_delay = 0.0
+
+    def test_close_while_audio_is_opening_stops_it(self):
+        FakeRecorder.open_delay = 1.0
+        try:
+            w = self.notes()
+            w.consent.setChecked(True)
+            w.live.setChecked(False)
+            QTest.mouseClick(w.btn_rec, Qt.LeftButton)
+            w.close()
+            rec = FakeRecorder.instances[-1]
+            self.assertTrue(pump(lambda: rec.stopped, timeout=5))
+        finally:
+            FakeRecorder.open_delay = 0.0
+
     def test_record_requires_consent(self):
         w = self.notes()
         QTest.mouseClick(w.btn_rec, Qt.LeftButton)
@@ -244,7 +279,7 @@ class NotesWindowTests(UITestCase):
         FakeRecorder.fail = True
         w.consent.setChecked(True)
         QTest.mouseClick(w.btn_rec, Qt.LeftButton)
-        self.assertIsNone(w.recorder)
+        self.assertTrue(pump(lambda: w.recorder is None))
         self.assertIsNone(w.live_notes)
         self.assertIsNone(w.copilot)
         self.assertIn("microfono", w.lbl_status.text())
@@ -335,6 +370,7 @@ class NotesWindowTests(UITestCase):
         w.consent.setChecked(True)
         w.live.setChecked(False)
         QTest.mouseClick(w.btn_rec, Qt.LeftButton)
+        self.assertTrue(pump(lambda: w.btn_stop.isEnabled()))
         self.assertIsNotNone(w.recorder)
         self.assertIsNone(w.live_notes)
         self.assertIsNone(FakeRecorder.instances[-1].on_audio)
@@ -629,6 +665,8 @@ class PrepWindowTests(UITestCase):
         self.llm.delay = 0.1
         p.input.setPlainText("Otra pregunta larga")
         QTest.mouseClick(p.btn_send, Qt.LeftButton)
+        pump(lambda: False, timeout=0.15)
+        self.assertIn("Otra pregunta larga", p.chat.toPlainText())  # se ve mientras llega
         self.assertTrue(p.btn_stop.isEnabled())
         self.assertFalse(p.btn_send.isEnabled())
         pump(lambda: False, timeout=0.2)

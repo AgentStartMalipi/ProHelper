@@ -23,6 +23,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -82,6 +83,8 @@ class NotesWindow(QMainWindow):
         self.live_sig.answer.connect(self._render_copilot)
         self.live_sig.discovery.connect(self._render_discovery)
         self.live_sig.attached.connect(self._attached)
+        self.live_sig.recording.connect(self._recording_opened)
+        self._opening: threading.Thread | None = None
         self._build()
         if self.prep.mode in MODES:
             self.mode.setCurrentText(self.prep.mode)
@@ -253,7 +256,7 @@ class NotesWindow(QMainWindow):
         if not self.consent.isChecked():
             self._status("Marca primero que los participantes aceptaron la grabacion.", error=True)
             return
-        from ..notes.recorder import DualRecorder, RecorderError
+        from ..notes.recorder import DualRecorder
 
         folder = self._new_folder()
         if self.live.isChecked():
@@ -264,19 +267,48 @@ class NotesWindow(QMainWindow):
                 self._status(f"⚠ no pude iniciar el modo en vivo: {exc}", error=True)
                 return
         on_audio = self.live_notes.push if self.live_notes else None
-        self.recorder = DualRecorder(folder, mic_device=self.cfg.mic_device, on_audio=on_audio)
-        try:
-            self.recorder.start()
-        except RecorderError as exc:
+        rec = self.recorder = DualRecorder(folder, mic_device=self.cfg.mic_device, on_audio=on_audio)
+        # Abrir el audio del sistema (PyAudio) tarda 2-3 s: en un hilo, para que
+        # la ventana no se congele. `_recording_opened` termina el arranque.
+        self.btn_rec.setEnabled(False)
+        self.live.setEnabled(False)
+        self._status("Abriendo microfono y audio del sistema...")
+
+        def work():
+            try:
+                rec.start()
+                self.live_sig.recording.emit((rec, None))
+            except Exception as exc:
+                self.live_sig.recording.emit((rec, exc))
+
+        self._opening = threading.Thread(target=work, name="speak-rec-open", daemon=True)
+        self._opening.start()
+
+    def _recording_opened(self, payload) -> None:
+        rec, exc = payload
+        self._opening = None
+        if rec is not self.recorder:  # se cerro la ventana mientras abria
+            if exc is None:
+                rec.stop()
+            return
+        if exc is not None:
             self.recorder = None
             self._stop_live()
-            self._status(str(exc), error=True)
+            self.btn_rec.setEnabled(True)
+            self.live.setEnabled(True)
+            self._status(f"⚠ {exc}", error=True)
             return
-        self.btn_rec.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.live.setEnabled(False)
-        warn = " · ".join(self.recorder.warnings)
-        self._status("● Grabando" + (" en vivo" if self.live_notes else "") + (f" — {warn}" if warn else ""))
+        info = getattr(rec, "info", {}) or {}
+        devices = []
+        if info.get("mic", {}).get("name"):
+            devices.append(f"Yo: {info['mic']['name']}")
+        if info.get("them", {}).get("name"):
+            devices.append(f"Ellos: {info['them']['name']}")
+        warn = " · ".join(rec.warnings)
+        self._status("● Grabando" + (" en vivo" if self.live_notes else "")
+                     + (f" ({' · '.join(devices)})" if devices else "")
+                     + (f" — ⚠ {warn}" if warn else ""), error=bool(warn))
         self._tick.start()
 
     # --- en vivo --------------------------------------------------------------
@@ -663,6 +695,10 @@ class NotesWindow(QMainWindow):
         os.startfile(str(target))
 
     def closeEvent(self, event) -> None:
+        if self._opening is not None:
+            # Aun abriendo el audio: esperar a que termine para poder cerrarlo.
+            self._opening.join(timeout=8)
+            QApplication.processEvents()
         if self.recorder:
             self._stop()
         else:
