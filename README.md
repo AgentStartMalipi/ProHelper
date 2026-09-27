@@ -5,7 +5,7 @@ Dos herramientas en una carpeta:
 | | Qué hace | Arranque |
 |---|---|---|
 | **SCREEN** | Capturas de pantalla → Claude te dice qué ve (este documento) | `run.bat` |
-| **SPEAK** | Simulador de entrevistas por voz y notas de llamadas grabadas ([speak/README.md](speak/README.md)) | `run_speak.bat` |
+| **SPEAK** | Simulador de entrevistas por voz, y notas de llamada con copiloto: preparación con tus documentos, respuestas y exploración en vivo ([speak/README.md](speak/README.md)) | `run_speak.bat` (notas: `run_speak.bat notes`) |
 
 Cada una tiene su entorno (`.venv` y `.venv-speak`), así que las dependencias
 pesadas de SPEAK (PySide6, faster-whisper) no tocan a SCREEN.

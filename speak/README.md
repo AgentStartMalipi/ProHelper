@@ -115,10 +115,17 @@ si fue en vivo, `transcript_live.md` y `notes_live.md`).
 Tres piezas:
 
 1. **Carpeta de conocimiento** (`KB_DIR`, de serie `speak/data/knowledge`):
-   tus PDF, Word, PowerPoint, Markdown, texto y CSV de siempre (portafolio,
-   fichas técnicas, precios, casos de éxito), y archivos técnicos: draw.io
-   (salen componentes y conexiones), YAML, Terraform, SQL, PlantUML, Mermaid. Se indexa sola al abrir Notas
-   de llamada y solo relee los archivos que cambiaron. Todo local.
+   tus PDF, Word, PowerPoint, Excel, Markdown, texto y CSV de siempre
+   (portafolio, fichas técnicas, precios, casos de éxito), y archivos
+   técnicos: draw.io (salen componentes y conexiones), YAML, Terraform, SQL,
+   PlantUML, Mermaid. De Word salen tablas, cuadros de texto, encabezados y
+   pies; de PowerPoint, tablas y **notas del orador**; de Excel, cada hoja con
+   los valores de las fórmulas y los porcentajes. Los CSV de Excel en español
+   (separados por `;`) y los textos en UTF-16 o ANSI se leen bien. Un PDF
+   **escaneado** (solo imagen) no tiene texto: aparece como error con el
+   aviso de adjuntar una captura para que Claude la lea. Se indexa sola al
+   abrir Notas de llamada, en segundo plano, y solo relee los archivos que
+   cambiaron. Todo local.
 2. **🧭 Preparar llamada** (antes de la llamada): un mini chat. Le cuentas de
    qué va ("mañana con el gerente de planta de Acme, quieren bajar vapor,
    estudia la propuesta v2"), adjuntas o pegas los documentos de esa llamada
@@ -192,9 +199,15 @@ de silencio (3 s si la frase quedó colgada: "…and", "porque", "…"), y nunca
 con audio suyo aún sin transcribir. Si ya respondió y el otro sigue, rehace la
 respuesta con la pregunta completa en el mismo sitio.
 
-La búsqueda es léxica (BM25) con tildes normalizadas y raíces de 5 letras:
-"audit" encuentra "auditoría". Si todo lo cargado cabe en el contexto (unos
-6.000 caracteres), va entero sin buscar.
+La búsqueda es léxica (BM25) con tildes normalizadas y raíces de 5 letras
+("audit" encuentra "auditoría"), más un diccionario bilingüe de unos 100
+términos comerciales y técnicos para cuando preguntan en inglés sobre
+documentos en español o al revés ("guarantee" → "garantía", "¿cómo cifran los
+datos?" → "encrypted"). Medido con `python -m speak.tests.retrieval_eval`
+(acierto en los 3 primeros): en el mismo idioma 12/12; cruzadas escritas
+aparte del diccionario, 11/14 con él y 5/14 sin él. Lo que no encuentra son
+paráfrasis sin palabras en común ("upfront payment" por "anticipo"). Si todo
+lo cargado cabe en el contexto (unos 6.000 caracteres), va entero sin buscar.
 
 Por consola:
 
@@ -256,9 +269,12 @@ Micrófono ─► audio_capture (VAD por energía + segmentador de frases)
   lo transcribe con un `IncrementalTranscriber` por pista. Rellena con
   silencio según el reloj, porque el loopback de WASAPI no entrega nada
   mientras no suena nada y la última frase de "Ellos" quedaría abierta.
-- **`knowledge.py`**: lee los documentos (Word y PowerPoint directo de su
-  XML, PDF con `pypdf`), los parte en trozos de ~900 caracteres y los busca
-  con BM25. Sin modelos ni descargas: responde en milisegundos.
+- **`knowledge.py`**: lee los documentos (Word, PowerPoint y Excel directo
+  de su XML, PDF con `pypdf`), los parte en trozos de ~900 caracteres y los
+  busca con BM25. Sin modelos ni descargas: el índice de la carpeta se arma
+  al indexarla (con 9.000 trozos, unos segundos en segundo plano) y cada
+  búsqueda tarda milisegundos. Los adjuntos van en un índice aparte que se
+  rearma al instante.
 - **`notes/copilot.py`**: `PrepSession` (chat y brief) y `Copilot` (cuándo
   responder y la respuesta en streaming). `Copilot.step()` es una iteración
   pura, así que las pruebas controlan el reloj.
@@ -269,7 +285,7 @@ Micrófono ─► audio_capture (VAD por energía + segmentador de frases)
 
     .venv-speak\Scripts\python.exe -m unittest discover -s speak/tests -t .
 
-Son 63 y no usan micrófono, red ni modelos. El detector de turnos cubre:
+No usan micrófono, red ni modelos. El detector de turnos cubre:
 pregunta corta, pregunta de varias frases, pausa dentro de una pregunta (con
 y sin puntos suspensivos), follow-up, alguien pensando en voz alta, solo
 muletillas, afirmación sin pregunta, turno reabierto, transcripción
@@ -277,7 +293,11 @@ pendiente, tope de silencio y español. También hay pruebas de punta a punta
 del simulador con dobles (pregunta → respuesta → evaluación, aclaración a
 mitad de respuesta, botón Terminé), del pipeline de notas y de las notas en
 vivo (dos pistas a distinta frecuencia → transcripción Yo/Ellos → borrador),
-de la base de conocimiento (Word/PowerPoint, tildes, plurales, caché) y del
+de la base de conocimiento (archivos generados con Word, PowerPoint y Excel
+reales y PDF de verdad en `speak/tests/fixtures`: tablas, cuadros de texto,
+notas del orador, fórmulas, porcentajes, PDF escaneado, CSV de Excel con `;`,
+UTF-16, ANSI, archivos bloqueados o dañados, caché, búsqueda cruzada entre
+idiomas, índice consistente al adjuntar mientras se busca) y del
 copiloto (espera al silencio, frase colgada, audio sin transcribir, pausa a
 mitad de idea que rehace la respuesta, Responder ahora, nunca en entrevista,
 brief y guía de la preparación) y de arquitectura (draw.io normal y

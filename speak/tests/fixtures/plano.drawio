@@ -1,0 +1,9 @@
+<mxfile host="app.diagrams.net"><diagram id="a" name="Actual"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="vpc" value="VPC prod" style="group" vertex="1" parent="1"/>
+<mxCell id="api" value="API Gateway" vertex="1" parent="vpc"/>
+<mxCell id="fn" value="Lambda &lt;b&gt;pagos&lt;/b&gt;" vertex="1" parent="vpc"/>
+<mxCell id="db" value="Aurora&lt;br&gt;Postgres" vertex="1" parent="vpc"/>
+<mxCell id="e1" edge="1" source="api" target="fn" parent="1"/>
+<mxCell id="e1l" value="REST" style="edgeLabel" vertex="1" connectable="0" parent="e1"/>
+<mxCell id="e2" value="SQL" edge="1" source="fn" target="db" parent="1"/>
+</root></mxGraphModel></diagram></mxfile>

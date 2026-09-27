@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -85,11 +86,16 @@ class ClaudeCLIClient(LLMClient):
         self.effort = effort
         self.timeout = timeout
 
-    def _args(self, system: str, json_input: bool = False) -> list[str]:
+    # Windows corta la linea de comandos en 32.767 caracteres: un prompt de
+    # sistema largo (una guia con un documento pegado) va por archivo.
+    MAX_ARG_SYSTEM = 8000
+
+    def _args(self, system: str, json_input: bool = False, system_file: str | None = None) -> list[str]:
         cli = shutil.which("claude")
         if not cli:
             raise LLMError("no encuentro `claude` en el PATH (instala Claude Code o usa "
                            "LLM_PROVIDER=anthropic)")
+        system_args = ["--system-prompt-file", system_file] if system_file else ["--system-prompt", system]
         return [
             cli, "-p", "--verbose",
             "--output-format", "stream-json", "--include-partial-messages",
@@ -98,16 +104,39 @@ class ClaudeCLIClient(LLMClient):
             # harness completo (lo mismo que midio SCREEN: 15x mas barato).
             "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
             "--setting-sources", "", "--permission-mode", "dontAsk",
-            "--no-session-persistence", "--system-prompt", system,
+            "--no-session-persistence", *system_args,
         ] + (["--input-format", "stream-json"] if json_input else [])
 
     def stream(self, system, prompt, cancel=None, images=None):
         payload = user_message_json(prompt, images) + "\n" if images else prompt
+        system_file = None
+        if len(system) > self.MAX_ARG_SYSTEM:
+            import tempfile
+
+            fd, system_file = tempfile.mkstemp(prefix="speak-system-", suffix=".txt")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(system)
+        try:
+            yield from self._stream(system, payload, bool(images), system_file, cancel)
+        finally:
+            if system_file:
+                try:
+                    os.unlink(system_file)
+                except OSError:
+                    pass
+
+    def _stream(self, system, payload, json_input, system_file, cancel):
         proc = subprocess.Popen(
-            self._args(system, json_input=bool(images)), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+            self._args(system, json_input=json_input, system_file=system_file), stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
             creationflags=_NO_WINDOW,
         )
+        # stderr se vacia en otro hilo: si se llenara el buffer del pipe (unos
+        # KB en Windows) el CLI se quedaria bloqueado escribiendo y aqui
+        # esperariamos stdout para siempre.
+        err_lines: list[str] = []
+        drain = threading.Thread(target=lambda: err_lines.extend(proc.stderr), daemon=True)
+        drain.start()
         timer = threading.Timer(self.timeout, proc.kill)
         timer.start()
         got_delta = False
@@ -144,7 +173,8 @@ class ClaudeCLIClient(LLMClient):
             if not got_delta and final_text:
                 yield final_text  # CLI viejo sin parciales: todo de una
             elif not got_delta and proc.returncode not in (0, None):
-                err = (proc.stderr.read() or "").strip()[-400:]
+                drain.join(timeout=2)
+                err = "".join(err_lines).strip()[-400:]
                 raise LLMError(f"claude termino con codigo {proc.returncode}: {err}")
         finally:
             timer.cancel()

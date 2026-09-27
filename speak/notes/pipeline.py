@@ -191,4 +191,8 @@ def load_any(path: Path, stt_factory, progress=lambda msg: None) -> Transcript:
         return transcribe_recording(path, stt_factory(), progress)
     if path.suffix.lower() in AUDIO_EXT:
         return transcribe_audio_file(path, stt_factory(), progress)
-    return parse_transcript_text(path.read_text(encoding="utf-8", errors="replace"), str(path))
+    # Transcripciones exportadas de Teams/Zoom o guardadas con el Bloc de
+    # notas: UTF-8, UTF-16 o ANSI (ver knowledge.decode_text).
+    from ..knowledge import decode_text
+
+    return parse_transcript_text(decode_text(path.read_bytes()), str(path))
