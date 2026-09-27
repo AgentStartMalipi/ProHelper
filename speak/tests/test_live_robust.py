@@ -362,6 +362,25 @@ class GlossaryAndSpanishTests(unittest.TestCase):
             self.assertEqual(question_kind(s), "statement", s)
 
 
+class NoiseFilterTests(unittest.TestCase):
+    def test_values_measured_on_a_real_webcam_mic(self):
+        from speak.transcriber import looks_like_noise
+
+        ctx = "Good morning, good morning. Good morning. How are you?"
+        # Ruido (tos/teclado) que Whisper convirtio en copia del contexto.
+        self.assertTrue(looks_like_noise("Good morning. Good morning.", ctx, 0.43))
+        self.assertTrue(looks_like_noise("Good morning. Good morning.", ctx, 0.75))
+        self.assertTrue(looks_like_noise("I'm sorry.", "", 0.62))
+        # Voz real (baja) del mismo microfono: se queda.
+        self.assertFalse(looks_like_noise("How are you?", ctx, 0.07))
+        self.assertFalse(looks_like_noise("I think I'm like...", ctx, 0.29))
+        self.assertFalse(looks_like_noise("Hello, how are you?", "How are we doing?", 0.09))
+        # Repetir lo dicho con voz clara (no_speech bajo) tambien se queda.
+        self.assertFalse(looks_like_noise("Good morning.", ctx, 0.12))
+        # Dudoso pero con palabras nuevas: se queda.
+        self.assertFalse(looks_like_noise("We need the PCI report by Friday.", ctx, 0.35))
+
+
 class AnswerLanguageTests(unittest.TestCase):
     def test_answer_language_follows_the_question(self):
         from speak.notes.copilot import answer_prompt, guess_language

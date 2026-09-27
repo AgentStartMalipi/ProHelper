@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import urllib.request
@@ -58,6 +59,24 @@ _HALLUCINATIONS = {
 def looks_like_hallucination(text: str, duration_s: float) -> bool:
     t = text.strip().lower()
     return not t or (duration_s < 2.5 and t in _HALLUCINATIONS)
+
+
+_WORDS_RE = re.compile(r"[\wáéíóúñü']+", re.IGNORECASE)
+
+
+def looks_like_noise(text: str, prompt: str, no_speech: float) -> bool:
+    """Ruido que Whisper convirtio en texto. Medido con el micro de una webcam
+    (voz baja): con la pista de contexto, una tos o el teclado salian como
+    "Good morning. Good morning." (copia de lo ya dicho) con no_speech 0,43-0,85;
+    la voz real no paso de 0,40. Se descarta si Whisper cree que no hay voz, o
+    si lo duda y el texto solo repite la pista (contexto o glosario)."""
+    if no_speech >= 0.6:
+        return True
+    if no_speech < 0.3 or not prompt:
+        return False
+    words = _WORDS_RE.findall(text.lower())
+    seen = set(_WORDS_RE.findall(prompt.lower()))
+    return bool(words) and sum(w in seen for w in words) / len(words) >= 0.9
 
 
 def _split_on_gaps(seg, gap_s: float) -> list[Segment]:
@@ -161,8 +180,11 @@ class FasterWhisperSTT(SpeechToText):
             max_new_tokens=int(duration * 8) + 16,
             no_repeat_ngram_size=4,
         )
+        segments = list(segments)
         text = " ".join(s.text.strip() for s in segments).strip()
-        text = "" if looks_like_hallucination(text, duration) else text
+        no_speech = max((getattr(s, "no_speech_prob", 0.0) for s in segments), default=0.0)
+        if looks_like_hallucination(text, duration) or looks_like_noise(text, prompt, no_speech):
+            text = ""
         return text, getattr(info, "language", None), float(getattr(info, "language_probability", 0.0) or 0.0)
 
     def transcribe_file(self, path: Path, split_gap_s: float = 0.8) -> list[Segment]:
