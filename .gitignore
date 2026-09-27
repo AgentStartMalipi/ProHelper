@@ -13,3 +13,6 @@ speak/data/
 # Python
 __pycache__/
 *.py[cod]
+
+# Copias de trabajo de los agentes de Claude Code
+.claude/
