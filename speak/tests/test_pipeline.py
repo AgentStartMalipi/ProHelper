@@ -505,14 +505,15 @@ class CopilotTests(unittest.TestCase):
         self.assertIn("pricing", again.question)
 
     def test_me_speaking_closes_the_question_at_once(self):
-        cop = self.make([Segment(1, 3, "What is the timeline?", "Ellos"),
-                         Segment(3.2, 3.8, "So,", "Yo")], now=3.9)
-        self.assertIsNone(cop.step())  # lo tuyo no es pregunta del otro: bloque vacio
-        self.segs[:] = [Segment(1, 3, "What is the timeline?", "Ellos")]
-        self.clock[0] = 3.3
-        self.assertIsNone(cop.step())
-        cop.quiet_s = 0.2
-        self.assertIsNotNone(cop.step())
+        cop = self.make([Segment(1, 3, "What is the timeline?", "Ellos")], now=3.3)
+        self.assertIsNone(cop.step())  # 0,3 s de silencio: todavia no
+        # Empiezas a responder ("So,"): no se espera el silencio, se responde
+        # la pregunta de ELLOS (no lo tuyo).
+        self.segs.append(Segment(3.2, 3.8, "So,", "Yo"))
+        self.clock[0] = 3.9
+        ans = cop.step()
+        self.assertIsNotNone(ans)
+        self.assertEqual(ans.question, "What is the timeline?")
 
     def test_statements_ignored_but_answer_now_forces(self):
         cop = self.make([Segment(1, 4, "We already work with another provider for this.", "Ellos")], now=9.0)

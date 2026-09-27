@@ -220,7 +220,7 @@ def run(model: str = "base", language: str | None = "en", real_llm: bool = False
         orig_on_text(who, ev)
     live._on_text = on_text
 
-    llm = make_llm(Config.load()) if real_llm else FakeLLM("**Respuesta:** ok")
+    llm = make_llm(Config.load(), prewarm=True) if real_llm else FakeLLM("**Respuesta:** ok")
     kb = KnowledgeBase()
     kb.add_text("propuesta_acme.md", KB_TEXT)
     events: list[dict] = []
@@ -232,7 +232,7 @@ def run(model: str = "base", language: str | None = "en", real_llm: bool = False
 
     cop = Copilot(llm, kb, "Cliente Acme: auditoria de vapor y plataforma de pagos.", snapshot=live.snapshot,
                   now=live.now, pending=lambda: live.pending(THEM), mode="venta", on_answer=on_answer,
-                  me_spoke_since=lambda t: live.spoke_since(ME, t))
+                  speech=live.speech)
     orig_answer = cop._answer
 
     def traced(q, tr, forced=False):

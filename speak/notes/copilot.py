@@ -57,7 +57,7 @@ from ..knowledge import IMAGE_EXT, KnowledgeBase, format_sources
 from ..llm_client import LLMClient
 from ..turn_detector import _DANGLING, _WORD_RE, ends_incomplete, only_fillers, question_kind
 from .analyzer import MODES
-from .pipeline import ME, Transcript, _fmt, render
+from .pipeline import ME, THEM, Transcript, _fmt, render
 
 log = logging.getLogger(__name__)
 
@@ -561,7 +561,7 @@ class Copilot:
     def __init__(self, llm: LLMClient, kb: KnowledgeBase | None, brief: Callable[[], str] | str,
                  snapshot: Callable[[], Transcript], now: Callable[[], float],
                  pending: Callable[[], int] = lambda: 0, mode: str = "venta",
-                 me_spoke_since: Callable[[float], bool] | None = None,
+                 speech: Callable[[str], list[tuple[float, float]]] | None = None,
                  on_answer: Callable[[Answer], None] = lambda a: None,
                  on_status: Callable[[str], None] = lambda m: None,
                  guide: Callable[[], str] | str = "",
@@ -573,9 +573,10 @@ class Copilot:
         self.snapshot = snapshot
         self.now = now
         self.pending = pending
-        # VAD de tu microfono: sabe que empezaste a responder antes de que
-        # Whisper transcriba tu frase (con la CPU ocupada eso tarda segundos).
-        self.me_spoke_since = me_spoke_since
+        # Cuando hablo cada uno segun el VAD (instantaneo), no segun Whisper
+        # (con la CPU ocupada tu texto puede llegar 10-50 s tarde). `speech(who)`
+        # -> [(inicio, fin)], con la frase en curso hasta "ahora".
+        self.speech = speech
         self.mode = mode
         self.on_answer = on_answer
         self.on_status = on_status
@@ -584,6 +585,7 @@ class Copilot:
         self.min_words = min_words
         self.answers: list[Answer] = []
         self._answered: tuple[float, str] | None = None  # (inicio del bloque, texto respondido)
+        self._cancels: dict[int, threading.Event] = {}
         self._force = threading.Event()
         self._stop = threading.Event()
         self._cancel: threading.Event | None = None
@@ -594,14 +596,21 @@ class Copilot:
     def enabled(self) -> bool:
         return self.mode in COPILOT_MODES
 
+    def _system(self) -> str:
+        return answer_prompt("", "", "", "", self.mode, self._guide())[0]
+
     def start(self) -> None:
+        # Con un cliente que lo soporte, deja un `claude` arrancado esperando
+        # la primera pregunta (~1,2 s menos hasta el primer texto).
+        self.llm.warm(self._system())
         self._thread = threading.Thread(target=self._loop, name="speak-copilot", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
-        if self._cancel:
-            self._cancel.set()
+        for ev in self._cancels.values():
+            ev.set()
+        self.llm.close()
 
     def answer_now(self) -> None:
         self._force.set()
@@ -616,16 +625,39 @@ class Copilot:
 
     # --- cuando responder ---
 
+    def _intervals(self, who: str, tr: Transcript) -> list[tuple[float, float]]:
+        spans = [(x.start, x.end) for x in tr.segments if x.speaker == who]
+        if self.speech is not None:
+            spans += self.speech(who)
+        return spans
+
     def pending_question(self, tr: Transcript) -> _Pending | None:
-        """Todo lo que el otro dijo desde tu ultima intervencion."""
-        segs = tr.segments
-        i = len(segs)
-        while i > 0 and segs[i - 1].speaker != ME:
-            i -= 1
-        block = [s for s in segs[i:] if not only_fillers(s.text)]
-        if not block:
+        """El ultimo turno del otro: sus frases seguidas sin que tu hablaras en
+        medio. Lo que es "hablar" lo dice el VAD de tu micro, no tu texto:
+        asi no se juntan dos preguntas si tu respuesta aun no se transcribio."""
+        mine = self._intervals(ME, tr)
+        theirs = [x for x in tr.segments if x.speaker != ME and not only_fillers(x.text)]
+        if not theirs:
             return None
-        return _Pending(block[0].start, block[-1].end, " ".join(s.text for s in block))
+        block = [theirs[-1]]
+        for seg in reversed(theirs[:-1]):
+            nxt = block[0]
+            if any(seg.end - 0.1 <= a <= nxt.start + 0.1 for a, _ in mine):
+                break  # hablaste entre esta frase y la siguiente: otro turno
+            block.insert(0, seg)
+        return _Pending(block[0].start, block[-1].end, " ".join(x.text for x in block))
+
+    def _they_are_talking(self, q: _Pending) -> bool:
+        """El otro esta hablando AHORA, despues de la pregunta (p. ej. sigue la
+        idea tras una pausa). Lo que ya dijo y espera a Whisper lo cubre
+        `pending()`; un "mm-hmm" que Whisper descarta no bloquea nada."""
+        if self.speech is None:
+            return False
+        # Frase ABIERTA ahora (el VAD aun no la cierra). No se compara su inicio
+        # con q.end: el pre-roll (200 ms) y el hueco que cierra frases (350 ms)
+        # hacen que una continuacion tras una coma "empiece" antes de q.end.
+        now = self.now()
+        return any(b >= now - 0.1 and a > q.start for a, b in self.speech(THEM))
 
     def step(self) -> Answer | None:
         forced = self._force.is_set()
@@ -633,13 +665,8 @@ class Copilot:
             return None
         tr = self.snapshot()
         q = self.pending_question(tr)
-        me_after = bool(tr.segments) and tr.segments[-1].speaker == ME
-        if q is not None and not me_after and self.me_spoke_since is not None:
-            me_after = self.me_spoke_since(q.end + 0.2)
         if forced:
             self._force.clear()
-            if q is None:
-                q = self._last_other_block(tr)
             if q is None:
                 self.on_status("Todavia no hay nada del otro lado para responder.")
                 return None
@@ -652,29 +679,27 @@ class Copilot:
                 return None
         if len(q.text.split()) < self.min_words or question_kind(q.text) == "statement":
             return None
-        if self.pending() > 0:
+        if self.pending() > 0 or self._they_are_talking(q):
             return None
+        # Si ya empezaste a responder ("buena pregunta, dejame ver..."), no se
+        # espera el silencio: justo ahi es cuando mas sirve la ayuda.
+        me_after = any(a >= q.end - 0.2 for a, _ in self._intervals(ME, tr))
         wait = self.incomplete_quiet_s if seems_unfinished(q.text) else self.quiet_s
         if not me_after and self.now() - q.end < wait:
             return None
         return self._answer(q, tr)
 
-    def _last_other_block(self, tr: Transcript) -> _Pending | None:
-        segs = [s for s in tr.segments if s.speaker != ME]
-        if not segs:
-            return None
-        last = segs[-1]
-        return _Pending(last.start, last.end, last.text)
-
     # --- respuesta ---
 
     def _answer(self, q: _Pending, tr: Transcript, forced: bool = False) -> Answer:
         with self._lock:
-            if self._cancel:
-                self._cancel.set()  # la anterior quedo vieja
-            self._cancel = cancel = threading.Event()
             self._answered = (q.start, q.text)
             prev = self.answers[-1] if self.answers else None
+            if prev and prev.at == q.start and prev.id in self._cancels:
+                # Solo se cancela la respuesta a ESTA misma pregunta (quedo
+                # vieja); la de una pregunta anterior termina de escribirse.
+                self._cancels[prev.id].set()
+            cancel = threading.Event()
             if prev and prev.at == q.start:
                 # El otro siguio hablando tras la pausa: misma pregunta, ahora
                 # completa. Se reescribe en su sitio, no se apila otra.
@@ -683,6 +708,8 @@ class Copilot:
             else:
                 ans = Answer(len(self.answers) + 1, q.start, q.text, forced=forced)
                 self.answers.append(ans)
+            self._cancels[ans.id] = cancel
+            self._cancel = cancel
         threading.Thread(target=self._generate, args=(ans, tr, cancel), name="speak-copilot-llm",
                          daemon=True).start()
         return ans

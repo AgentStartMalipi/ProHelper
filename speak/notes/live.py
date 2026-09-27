@@ -92,6 +92,11 @@ class _LiveTrack:
         self._q.put(None)
         self._thread.join(timeout)
 
+    def open_since(self) -> float | None:
+        """Inicio de la frase que se esta diciendo ahora (VAD), o None."""
+        seg = self._seg
+        return seg._utt_start / SR if seg._buf_len else None
+
     def _event(self, ev) -> None:
         if isinstance(ev, Utterance):
             self._on_utterance(self.speaker, ev)
@@ -269,7 +274,7 @@ class LiveNotes:
         self._stt_worker: LiveTranscriber | None = None
         # Cuando hablo cada uno segun el VAD (no Whisper): el copiloto sabe al
         # instante que empezaste a responder, aunque tu texto llegue despues.
-        self._spoke: dict[str, list[float]] = {ME: [], THEM: []}
+        self._spoke: dict[str, list[tuple[float, float]]] = {ME: [], THEM: []}
         self._notes_thread: threading.Thread | None = None
 
     # --- ciclo de vida --------------------------------------------------------
@@ -317,13 +322,21 @@ class LiveNotes:
 
     def _on_utterance(self, who: str, utt: Utterance) -> None:
         with self._lock:
-            self._spoke[who].append(utt.start)
+            self._spoke[who].append((utt.start, utt.end))
+            del self._spoke[who][:-50]
         self._stt_worker.submit(who, utt.audio, utt.start, utt.end)
 
-    def spoke_since(self, speaker: str, t: float) -> bool:
-        """¿`speaker` dijo algo (segun el VAD) que empezo despues de `t`?"""
+    def speech(self, speaker: str) -> list[tuple[float, float]]:
+        """Cuando hablo `speaker` segun el VAD: [(inicio, fin)] de sus ultimas
+        frases, y la que esta diciendo ahora como (inicio, ahora). Llega al
+        instante, sin esperar a Whisper."""
         with self._lock:
-            return any(s >= t for s in self._spoke[speaker][-5:])
+            out = list(self._spoke[speaker])
+        track = self._tracks.get(speaker)
+        since = track.open_since() if track else None
+        if since is not None:
+            out.append((since, self._clock()))
+        return out
 
     def _on_text(self, who: str, ev: TranscriptEvent) -> None:
         # Atraso = cuanto despues de que termino la frase aparece su texto.

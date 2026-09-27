@@ -78,12 +78,34 @@ class LLMClient(ABC):
     def complete(self, system: str, prompt: str, images: list[Path] | None = None) -> str:
         return "".join(self.stream(system, prompt, images=images))
 
+    def warm(self, system: str) -> None:
+        """Deja lista la proxima llamada con este system prompt (si se puede)."""
+
+    def close(self) -> None:
+        """Libera lo que `warm` haya dejado preparado."""
+
 
 class ClaudeCLIClient(LLMClient):
-    def __init__(self, model: str, effort: str = "low", timeout: float = 180.0) -> None:
+    """`prewarm=True` (el copiloto): siempre hay un `claude` ya arrancado
+    esperando la proxima pregunta. Arrancar el proceso es ~1,2 s del primer
+    token: medido, 2,7-2,9 s en frio vs 0,9-1,9 s pre-arrancado. Tiene que ir
+    con `--input-format stream-json`: con texto por stdin el CLI no espera mas
+    de ~3 s y arranca sin pregunta."""
+
+    def __init__(self, model: str, effort: str = "low", timeout: float = 180.0,
+                 prewarm: bool = False) -> None:
         self.model = model
         self.effort = effort
         self.timeout = timeout
+        self.prewarm = prewarm
+        self._warm: tuple[str, subprocess.Popen] | None = None
+        self._warm_lock = threading.Lock()
+        if prewarm:
+            # En Windows el hijo no muere con el padre: sin esto quedaria un
+            # `claude` esperando para siempre al cerrar la app.
+            import atexit
+
+            atexit.register(self.close)
 
     def _args(self, system: str, json_input: bool = False) -> list[str]:
         cli = shutil.which("claude")
@@ -101,13 +123,55 @@ class ClaudeCLIClient(LLMClient):
             "--no-session-persistence", "--system-prompt", system,
         ] + (["--input-format", "stream-json"] if json_input else [])
 
-    def stream(self, system, prompt, cancel=None, images=None):
-        payload = user_message_json(prompt, images) + "\n" if images else prompt
-        proc = subprocess.Popen(
-            self._args(system, json_input=bool(images)), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    def _spawn(self, system: str, json_input: bool) -> subprocess.Popen:
+        return subprocess.Popen(
+            self._args(system, json_input=json_input), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
             creationflags=_NO_WINDOW,
         )
+
+    def _take_warm(self, system: str) -> subprocess.Popen | None:
+        with self._warm_lock:
+            warm, self._warm = self._warm, None
+        if warm is None:
+            return None
+        sys_prompt, proc = warm
+        if sys_prompt == system and proc.poll() is None:
+            return proc
+        proc.kill()  # otro system prompt (cambiaste la guia o el modo) o murio
+        return None
+
+    def warm(self, system: str) -> None:
+        if not self.prewarm:
+            return
+
+        def spawn():
+            try:
+                proc = self._spawn(system, json_input=True)
+            except Exception as exc:
+                log.warning("no pude pre-arrancar claude: %s", exc)
+                return
+            with self._warm_lock:
+                old, self._warm = self._warm, (system, proc)
+            if old is not None:
+                old[1].kill()
+
+        threading.Thread(target=spawn, name="speak-llm-warm", daemon=True).start()
+
+    def close(self) -> None:
+        with self._warm_lock:
+            warm, self._warm = self._warm, None
+        if warm is not None:
+            warm[1].kill()
+
+    def stream(self, system, prompt, cancel=None, images=None):
+        proc = self._take_warm(system) if self.prewarm else None
+        json_input = bool(images) or self.prewarm
+        if proc is None:
+            proc = self._spawn(system, json_input)
+        payload = user_message_json(prompt, images or []) + "\n" if json_input else prompt
+        if self.prewarm:
+            self.warm(system)  # la siguiente pregunta ya encuentra uno listo
         timer = threading.Timer(self.timeout, proc.kill)
         timer.start()
         got_delta = False
@@ -191,10 +255,11 @@ class FakeLLM(LLMClient):
             yield self.reply[i:i + 7]
 
 
-def make_llm(cfg) -> LLMClient:
+def make_llm(cfg, prewarm: bool = False) -> LLMClient:
+    """`prewarm`: para el copiloto, donde cada segundo cuenta (ver ClaudeCLIClient)."""
     provider = cfg.LLM_PROVIDER.strip().lower()
     if provider == "claude_cli":
-        return ClaudeCLIClient(cfg.LLM_MODEL, cfg.LLM_EFFORT)
+        return ClaudeCLIClient(cfg.LLM_MODEL, cfg.LLM_EFFORT, prewarm=prewarm)
     if provider == "anthropic":
         return AnthropicClient(cfg.LLM_MODEL, cfg.API_KEY)
     if provider == "fake":

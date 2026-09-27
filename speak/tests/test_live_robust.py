@@ -126,13 +126,16 @@ class ArrivalPaddingTests(unittest.TestCase):
 
 
 class CopilotTriggerTests(unittest.TestCase):
-    def make(self, segs, now, me_spoke=lambda t: False):
+    """Casos sacados de la corrida e2e con la CPU al 100%."""
+
+    def make(self, segs, now, me=(), them=(), llm=None):
         from speak.llm_client import FakeLLM
         from speak.notes.copilot import Copilot
 
         self.clock = [now]
-        return Copilot(FakeLLM("ok"), None, "", snapshot=lambda: Transcript(list(segs), "t"),
-                       now=lambda: self.clock[0], mode="venta", me_spoke_since=me_spoke)
+        self.speech = {ME: list(me), THEM: list(them)}
+        return Copilot(llm or FakeLLM("ok"), None, "", snapshot=lambda: Transcript(list(segs), "t"),
+                       now=lambda: self.clock[0], mode="venta", speech=lambda who: list(self.speech[who]))
 
     def test_whisper_question_mark_on_a_fragment_waits_longer(self):
         cop = self.make([Segment(1, 3, "And what would the price be for?", THEM)], now=4.6)
@@ -144,13 +147,76 @@ class CopilotTriggerTests(unittest.TestCase):
         cop = self.make([Segment(1, 3, "What is the timeline for the rollout?", THEM)], now=4.3)
         self.assertIsNotNone(cop.step())
 
-    def test_my_voice_closes_the_question_before_whisper(self):
-        spoke = [False]
-        cop = self.make([Segment(1, 3, "How long would the audit take, and", THEM)], now=3.5,
-                        me_spoke=lambda t: spoke[0] and t <= 3.4)
-        self.assertIsNone(cop.step())  # frase colgada: esperaria 3 s
-        spoke[0] = True  # empece a responder (VAD), mi texto aun no llega
+    def test_waits_while_they_keep_talking_after_a_pause(self):
+        # "...be for?" y tras 2,6 s sigue hablando: su segunda parte aun no
+        # es texto, pero el VAD la ve en curso.
+        cop = self.make([Segment(1, 3, "And what would the price be for?", THEM)], now=7.0,
+                        them=[(1, 3), (5.6, 7.0)])
+        self.assertIsNone(cop.step())
+        self.speech[THEM][-1] = (5.6, 8.0)  # ya termino: ahora espera a Whisper
+        self.clock[0] = 9.0
+        pending = [1]
+        cop.pending = lambda: pending[0]
+        self.assertIsNone(cop.step())
+        pending[0] = 0  # y su texto no llego (era un "mm-hmm" descartado): no bloquea
+
         self.assertIsNotNone(cop.step())
+
+    def test_my_voice_closes_the_question_before_whisper(self):
+        cop = self.make([Segment(1, 3, "How long would the audit take, and", THEM)], now=3.5)
+        self.assertIsNone(cop.step())  # frase colgada: esperaria 3 s
+        self.speech[ME].append((3.3, 3.5))  # empece a responder (VAD); mi texto aun no llega
+        self.assertIsNotNone(cop.step())
+
+    def test_answers_even_after_my_stall_is_transcribed(self):
+        # Antes: si tu "buena pregunta, dejame ver" llegaba a texto antes de
+        # disparar, la pregunta no se respondia nunca.
+        cop = self.make([Segment(1, 3, "How long would the audit take?", THEM),
+                         Segment(3.2, 5.0, "Great question, let me walk you through it.", ME)], now=5.2,
+                        me=[(3.2, 5.0)])
+        ans = cop.step()
+        self.assertIsNotNone(ans)
+        self.assertEqual(ans.question, "How long would the audit take?")
+        self.assertIsNone(cop.step())  # y una sola vez
+
+    def test_my_untranscribed_reply_splits_their_turns(self):
+        # Ellos: afirmacion + pregunta A; yo respondo (sin texto aun); Ellos:
+        # pregunta B. Debe responder B sola, no "afirmacion + A + B".
+        segs = [Segment(1, 4, "We run five plants, three of them in Colombia.", THEM),
+                Segment(4.5, 8, "Do you think Aurora can handle ten times that load?", THEM),
+                Segment(12, 15, "Can you tell me about your PCI experience?", THEM)]
+        cop = self.make(segs, now=17.0, me=[(8.8, 11.5)])
+        ans = cop.step()
+        self.assertEqual(ans.question, "Can you tell me about your PCI experience?")
+
+    def test_new_question_does_not_cancel_previous_answer(self):
+        import threading as th
+
+        from speak.llm_client import LLMClient
+
+        release = th.Event()
+
+        class SlowLLM(LLMClient):
+            def stream(self, system, prompt, cancel=None, images=None):
+                yield "primera parte "
+                release.wait(3)
+                if cancel is not None and cancel.is_set():
+                    return
+                yield "fin"
+
+        segs = [Segment(1, 3, "How long would the audit take?", THEM)]
+        cop = self.make(segs, now=5.0, llm=SlowLLM())
+        first = cop.step()
+        self.assertTrue(wait_for(lambda: first.text.startswith("primera")))
+        segs.append(Segment(6, 7, "Sure.", ME))
+        segs.append(Segment(8, 10, "And what is the price per plant?", THEM))
+        self.speech[ME].append((6, 7))
+        self.clock[0] = 12.0
+        second = cop.step()
+        self.assertIsNot(second, first)
+        release.set()
+        self.assertTrue(wait_for(lambda: first.done and second.done))
+        self.assertTrue(first.text.endswith("fin"))
 
     def test_seems_unfinished(self):
         from speak.notes.copilot import seems_unfinished
@@ -161,7 +227,7 @@ class CopilotTriggerTests(unittest.TestCase):
         self.assertFalse(seems_unfinished("¿Cuánto cuesta la auditoría?"))
 
 
-class SpokeSinceTests(unittest.TestCase):
+class SpeechTimesTests(unittest.TestCase):
     def test_vad_times_are_tracked(self):
         from speak.notes.live import LiveNotes
 
@@ -179,9 +245,72 @@ class SpokeSinceTests(unittest.TestCase):
         for i in range(0, len(x), 1600):
             live.push("me", x[i:i + 1600], 16000, (i + 1600) / 16000)
         live.stop(wait=True)
-        self.assertTrue(live.spoke_since(ME, 0.5))
-        self.assertFalse(live.spoke_since(ME, 2.5))
-        self.assertFalse(live.spoke_since(THEM, 0.0))
+        spans = live.speech(ME)
+        self.assertEqual(len(spans), 1)
+        self.assertAlmostEqual(spans[0][0], 0.8, delta=0.15)  # con pre-roll
+        self.assertEqual(live.speech(THEM), [])
+
+
+class PrewarmTests(unittest.TestCase):
+    def make(self):
+        import io
+        import json
+
+        from speak.llm_client import ClaudeCLIClient
+
+        spawned = []
+
+        class FakeProc:
+            def __init__(self, system, json_input):
+                self.system, self.json_input = system, json_input
+                self.stdin = io.StringIO()
+                self.stdin.close = lambda: None
+                delta = {"type": "stream_event", "event": {"type": "content_block_delta",
+                                                           "delta": {"type": "text_delta", "text": "hola"}}}
+                self.stdout = iter([json.dumps(delta) + "\n", json.dumps({"type": "result"}) + "\n"])
+                self.stderr = io.StringIO()
+                self.killed = False
+                self.returncode = None
+
+            def poll(self):
+                return 0 if self.killed else None
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout=None):
+                self.returncode = 0
+                return 0
+
+        client = ClaudeCLIClient("m", prewarm=True)
+
+        def spawn(system, json_input):
+            proc = FakeProc(system, json_input)
+            spawned.append(proc)
+            return proc
+        client._spawn = spawn
+        return client, spawned
+
+    def test_uses_the_warm_process_and_refills(self):
+        client, spawned = self.make()
+        client.warm("S")
+        self.assertTrue(wait_for(lambda: client._warm is not None))
+        warm = spawned[0]
+        self.assertEqual("".join(client.stream("S", "pregunta")), "hola")
+        self.assertIn('"pregunta"', warm.stdin.getvalue())  # fue al pre-arrancado, en JSON
+        self.assertTrue(wait_for(lambda: client._warm is not None and client._warm[1] is not warm))
+        client.close()
+        self.assertTrue(spawned[-1].killed)
+
+    def test_other_system_prompt_discards_the_warm_one(self):
+        client, spawned = self.make()
+        client.warm("guia vieja")
+        self.assertTrue(wait_for(lambda: client._warm is not None))
+        old = spawned[0]
+        self.assertEqual("".join(client.stream("guia nueva", "p")), "hola")
+        self.assertTrue(old.killed)
+        self.assertEqual(spawned[1].system, "guia nueva")
+        client.close()
 
 
 if __name__ == "__main__":
