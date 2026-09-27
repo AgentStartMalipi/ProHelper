@@ -69,6 +69,19 @@ def mics(cfg: Config, seconds: float = 5.0) -> int:
 
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    # Todo lo que se imprime queda tambien en data/mic_test.txt, para poder
+    # revisarlo (o pasarselo a alguien) despues de cerrar la ventana.
+    report_file = DATA_DIR / "mic_test.txt"
+    lines: list[str] = []
+    import builtins
+
+    def print(*a, **k):  # noqa: A001 - sombra local a proposito
+        builtins.print(*a, **k)
+        if k.get("end") != "\r":  # la cuenta regresiva no va al archivo
+            lines.append(" ".join(str(x) for x in a).strip("\n"))
+            report_file.write_text(time.strftime("%Y-%m-%d %H:%M:%S\n") + "\n".join(lines) + "\n",
+                                   encoding="utf-8")
+
     apis = {i: a["name"] for i, a in enumerate(sd.query_hostapis())}
     # WASAPI es lo que usa Windows hoy; MME repite los mismos con otro nombre.
     devices = [(i, d) for i, d in enumerate(sd.query_devices())
