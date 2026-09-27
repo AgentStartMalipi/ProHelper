@@ -54,6 +54,11 @@ class Config:
     STT_LANGUAGE: str = "en"  # "" = autodetectar
     STT_DEVICE: str = "cpu"
     STT_COMPUTE_TYPE: str = "int8"
+    # Notas en vivo: dos pistas a la vez en CPU. `small` no da abasto en una
+    # laptop; `base` es ~2-3x mas rapido. La transcripcion final (al detener)
+    # sigue con STT_MODEL.
+    STT_LIVE_MODEL: str = "base"
+    STT_THREADS: int = 0  # 0 = todos los nucleos
     ASSEMBLYAI_API_KEY: str = ""
 
     # --- Audio / turnos --------------------------------------------------

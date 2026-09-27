@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import threading
 import time
@@ -94,11 +95,14 @@ class FasterWhisperSTT(SpeechToText):
     name = "faster_whisper"
 
     def __init__(self, model: str = "small", device: str = "cpu",
-                 compute_type: str = "int8", language: str = "en") -> None:
+                 compute_type: str = "int8", language: str = "en", cpu_threads: int = 0) -> None:
         self.model_name = model
         self.device = device
         self.compute_type = compute_type
         self.language = language or None
+        # 0 = todos los nucleos. El default de CTranslate2 son 4: medido en una
+        # laptop de 8 nucleos, 6 s de audio pasaban de 15 s a 38 s.
+        self.cpu_threads = cpu_threads or os.cpu_count() or 4
         self._model = None
         self._lock = threading.Lock()
 
@@ -116,7 +120,8 @@ class FasterWhisperSTT(SpeechToText):
                 # La primera vez descarga el modelo (small ~ 480 MB) a la cache
                 # de Hugging Face; despues carga en segundos.
                 self._model = WhisperModel(
-                    self.model_name, device=self.device, compute_type=self.compute_type
+                    self.model_name, device=self.device, compute_type=self.compute_type,
+                    cpu_threads=self.cpu_threads,
                 )
                 log.info("modelo %s cargado en %.1fs", self.model_name, time.time() - t0)
             return self._model
@@ -124,6 +129,7 @@ class FasterWhisperSTT(SpeechToText):
     def transcribe(self, audio: np.ndarray, sample_rate: int, prompt: str = "") -> str:
         if sample_rate != 16000:
             raise STTError("faster-whisper espera audio a 16 kHz")
+        duration = len(audio) / sample_rate
         segments, _ = self._get().transcribe(
             audio,
             language=self.language,
@@ -131,9 +137,19 @@ class FasterWhisperSTT(SpeechToText):
             vad_filter=False,  # el segmentador ya corto la frase
             condition_on_previous_text=False,
             initial_prompt=prompt or None,  # continuidad con lo ya dicho
+            # Lo que hacia que una frase de 1,4 s tardara 30 s: con ruido,
+            # Whisper entra en bucle ("good morning, good morning...") hasta
+            # 448 tokens, y si el resultado sale raro lo re-decodifica hasta 6
+            # veces subiendo la temperatura. En vivo: una sola pasada, sin
+            # marcas de tiempo, y un tope de tokens acorde a lo que dura la frase
+            # (se habla a ~3-4 tokens/s).
+            temperature=0.0,
+            without_timestamps=True,
+            max_new_tokens=int(duration * 8) + 16,
+            no_repeat_ngram_size=4,
         )
         text = " ".join(s.text.strip() for s in segments).strip()
-        return "" if looks_like_hallucination(text, len(audio) / sample_rate) else text
+        return "" if looks_like_hallucination(text, duration) else text
 
     def transcribe_file(self, path: Path, split_gap_s: float = 0.8) -> list[Segment]:
         # Con vad_filter, Whisper junta en un segmento trozos de habla separados
@@ -201,12 +217,13 @@ class AssemblyAISTT(SpeechToText):
         ]
 
 
-def make_stt(cfg, for_files: bool = False) -> SpeechToText:
-    """El modo en vivo siempre usa el local; los archivos pueden ir a la API."""
+def make_stt(cfg, for_files: bool = False, model: str | None = None) -> SpeechToText:
+    """El modo en vivo siempre usa el local; los archivos pueden ir a la API.
+    `model` cambia el tamano (Notas en vivo usa STT_LIVE_MODEL, mas liviano)."""
     if for_files and cfg.STT_PROVIDER == "assemblyai":
         return AssemblyAISTT(cfg.ASSEMBLYAI_API_KEY, cfg.STT_LANGUAGE)
-    return FasterWhisperSTT(cfg.STT_MODEL, cfg.STT_DEVICE, cfg.STT_COMPUTE_TYPE,
-                            cfg.STT_LANGUAGE)
+    return FasterWhisperSTT(model or cfg.STT_MODEL, cfg.STT_DEVICE, cfg.STT_COMPUTE_TYPE,
+                            cfg.STT_LANGUAGE, cfg.STT_THREADS)
 
 
 # --- en vivo -----------------------------------------------------------------

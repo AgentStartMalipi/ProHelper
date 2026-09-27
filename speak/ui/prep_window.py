@@ -350,8 +350,8 @@ class PrepWindow(QMainWindow):
         if self._streaming:
             parts.append(f"🤖 **Asistente**\n\n{self._streaming}")
         if not parts:
-            parts.append("_Cuentale de que va la llamada: con quien, para que, que documentos importan. "
-                         "Te hara preguntas, detectara huecos y propondra lo que te pueden preguntar._")
+            parts.append("*Cuentale de que va la llamada: con quien, para que, que documentos importan. "
+                         "Te hara preguntas, detectara huecos y propondra lo que te pueden preguntar.*")
         self.chat.setMarkdown("\n\n---\n\n".join(parts))
         bar = self.chat.verticalScrollBar()
         bar.setValue(bar.maximum())

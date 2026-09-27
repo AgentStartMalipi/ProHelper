@@ -196,6 +196,8 @@ Por consola:
 | `LLM_MODEL` | Id completo. `claude-sonnet-5` de serie: medido, primer token ~2,5 s. Haiku 4.5 tardó 28 s en el primer token |
 | `STT_MODEL` | `base` (más rápido), `small` (de serie), `medium` / `large-v3` (más preciso, lento en CPU) |
 | `STT_LANGUAGE` | `en`, `es` o vacío (autodetectar) |
+| `STT_LIVE_MODEL` | modelo de Notas en vivo (`base`). Medido en una laptop de 8 hilos: 11,8 s de voz en 8 s con `base`, 22,6 s con `small` (no da abasto en vivo), 3,9 s con `tiny` (mucho peor). La transcripción final sigue con `STT_MODEL` |
+| `STT_THREADS` | hilos de Whisper; `0` = todos (el default de la librería son 4) |
 | `SILENCE_THRESHOLD` | ms para cerrar una pregunta tuya (900) |
 | `ANSWER_SILENCE` | ms para cerrar una respuesta tuya (2500) |
 | `MAX_SILENCE` | tope: con este silencio siempre se cierra (6000) |

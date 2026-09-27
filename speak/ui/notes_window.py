@@ -84,8 +84,10 @@ class NotesWindow(QMainWindow):
         self._build()
         if self.prep.mode in MODES:
             self.mode.setCurrentText(self.prep.mode)
-        # La carpeta se indexa de fondo: para cuando empiece la llamada ya esta.
+        # La carpeta se indexa y el modelo de voz se carga de fondo: al pulsar
+        # Grabar ya estan listos (antes eran ~10 s de espera al empezar).
         threading.Thread(target=self._load_kb, name="speak-kb", daemon=True).start()
+        threading.Thread(target=self._preload_stt, name="speak-stt-preload", daemon=True).start()
         self._tick = QTimer(self)
         self._tick.setInterval(200)
         self._tick.timeout.connect(self._update_rec)
@@ -282,9 +284,9 @@ class NotesWindow(QMainWindow):
         self.out_transcript.setReadOnly(True)
         self.out_questions.clear()
         self.out_notes.setMarkdown(
-            "_Borrador en vivo: aparece cuando haya algo de conversacion y se reescribe cada "
-            f"~{self.cfg.LIVE_NOTES_INTERVAL} s. **✨ Actualizar notas** lo pide ya._"
-            if llm else "_Notas en vivo desactivadas (LIVE_NOTES_INTERVAL=0)._")
+            "*Borrador en vivo: aparece cuando haya algo de conversacion y se reescribe cada "
+            f"~{self.cfg.LIVE_NOTES_INTERVAL} s. **✨ Actualizar notas** lo pide ya.*"
+            if llm else "*Notas en vivo desactivadas (LIVE_NOTES_INTERVAL=0).*")
         self.btn_notes.setText("✨ Actualizar notas")
         self.live_notes = LiveNotes(
             self._live_stt(), llm, self.mode.currentText(), self.cfg.NOTES_LANGUAGE,
@@ -331,10 +333,16 @@ class NotesWindow(QMainWindow):
                 (self.folder / "notes_live.md").write_text(live.notes + "\n", encoding="utf-8")
 
     def _live_stt(self):
-        """En vivo siempre Whisper local; se reutiliza para la pasada final."""
+        """En vivo: Whisper local con el modelo liviano (STT_LIVE_MODEL)."""
         if self._local_stt is None:
-            self._local_stt = make_stt(self.cfg)
+            self._local_stt = make_stt(self.cfg, model=self.cfg.STT_LIVE_MODEL or self.cfg.STT_MODEL)
         return self._local_stt
+
+    def _preload_stt(self) -> None:
+        try:
+            self._live_stt().warmup()
+        except Exception as exc:
+            self.live_sig.status.emit(f"modelo de voz: {exc}")
 
     def _mode_changed(self, mode: str) -> None:
         self.prep.mode = mode
@@ -385,13 +393,13 @@ class NotesWindow(QMainWindow):
     def _discovery_idle(self) -> None:
         mode = self.mode.currentText()
         if mode not in COPILOT_MODES:
-            msg = "_En modo **entrevista** la exploracion en vivo esta apagada._"
+            msg = "*En modo **entrevista** la exploracion en vivo esta apagada.*"
         else:
             auto = (f"se actualiza sola cada ~{self.cfg.DISCOVERY_INTERVAL} s"
                     if self.cfg.DISCOVERY_INTERVAL > 0 else "se actualiza con el boton")
-            msg = ("_**🔍 ¿Que me falta?** revisa lo que se sabe (conversacion, brief y documentos), "
+            msg = ("**🔍 ¿Que me falta?** *revisa lo que se sabe (conversacion, brief y documentos), "
                    "dice si alcanza y te da las 3 proximas preguntas. Antes de la llamada sirve para ver si "
-                   f"el contexto que te dieron es suficiente; grabando en vivo {auto}._")
+                   f"el contexto que te dieron es suficiente; grabando en vivo {auto}.*")
         self.out_discovery.setMarkdown(msg)
         self.lbl_discovery.setText("")
 
@@ -464,17 +472,17 @@ class NotesWindow(QMainWindow):
     def _copilot_idle(self) -> None:
         mode = self.mode.currentText()
         if not self.cfg.COPILOT_ENABLED:
-            msg = "_Copiloto desactivado (COPILOT_ENABLED=false en speak/.env)._"
+            msg = "*Copiloto desactivado (COPILOT_ENABLED=false en speak/.env).*"
         elif mode not in COPILOT_MODES:
-            msg = ("_En modo **entrevista** el copiloto no responde en vivo: seria soplarte en una "
-                   "evaluacion. Para practicar esta el simulador._")
+            msg = ("*En modo **entrevista** el copiloto no responde en vivo: seria soplarte en una "
+                   "evaluacion. Para practicar esta el simulador.*")
         else:
             brief = "con tu brief" if self.prep.brief.strip() else "sin brief (🧭 Preparar llamada)"
             n = len(self.kb.sources())
             guide = self.prep.guide_name or ("guia propia" if self.prep.guide.strip() else "sin guia")
-            msg = (f"_Cuando el otro lado haga una pregunta, aqui aparece que responder, {brief} y "
+            msg = (f"*Cuando el otro lado haga una pregunta, aqui aparece que responder, {brief} y "
                    f"{n} documentos. Guia: **{guide}**. Funciona grabando **En vivo**. "
-                   f"**F8** responde a lo ultimo que dijo._")
+                   f"**F8** responde a lo ultimo que dijo.*")
         self.out_copilot.setMarkdown(msg)
 
     def _render_copilot(self, _answer=None) -> None:
@@ -503,7 +511,7 @@ class NotesWindow(QMainWindow):
 
     def _live_notes(self, md: str) -> None:
         if self.live_notes:
-            self.out_notes.setMarkdown("_Borrador en vivo_\n\n" + md)
+            self.out_notes.setMarkdown("*Borrador en vivo_\n\n" + md)
 
     def _update_rec(self) -> None:
         if not self.recorder:
@@ -543,8 +551,10 @@ class NotesWindow(QMainWindow):
 
     def _stt(self):
         stt = make_stt(self.cfg, for_files=True)
-        if isinstance(stt, FasterWhisperSTT):
-            return self._live_stt()  # el mismo modelo ya cargado, no otro en memoria
+        live = self._local_stt
+        if (isinstance(stt, FasterWhisperSTT) and live is not None
+                and getattr(live, "model_name", None) == stt.model_name):
+            return live  # el mismo modelo ya cargado, no otro en memoria
         return stt
 
     # --- notas ----------------------------------------------------------------

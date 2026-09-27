@@ -213,6 +213,14 @@ class LiveNotes:
         self._stts[who].submit(utt.audio, utt.start, utt.end)
 
     def _on_text(self, who: str, ev: TranscriptEvent) -> None:
+        # Atraso = cuanto despues de que termino la frase aparece su texto.
+        lag = self._clock() - ev.end
+        log.info("en vivo %s: %.1fs de audio en %.1fs, atraso %.1fs, en cola %d",
+                 who, ev.end - ev.start, ev.latency_s, lag, self.pending(who))
+        if lag > 15 and time.monotonic() - getattr(self, "_lag_warned", 0) > 60:
+            self._lag_warned = time.monotonic()
+            self.on_status(f"la transcripcion en vivo va {lag:.0f} s atrasada: prueba STT_LIVE_MODEL=tiny "
+                           "en speak/.env")
         with self._lock:
             self._segs[who].append(Segment(ev.start, ev.end, ev.text, who))
             self._words += len(ev.text.split())
