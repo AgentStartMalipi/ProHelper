@@ -1,0 +1,3 @@
+# Los fixtures de pruebas prueban codificaciones y finales de linea exactos
+# (CSV de Excel, UTF-16 del Bloc de notas): git no debe tocarlos.
+speak/tests/fixtures/** -text
