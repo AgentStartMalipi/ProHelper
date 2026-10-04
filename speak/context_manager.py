@@ -43,6 +43,7 @@ class Profile:
     job_description: str = ""
     cv: str = ""
     language: str = "en"
+    target: str = ""  # vacante elegida del perfil de entrevista
 
 
 @dataclass
@@ -72,6 +73,8 @@ class ContextManager:
         self.cv_max = cv_max
         self.jd_max = jd_max
         self.profile = Profile()
+        # Perfil de entrevista (interview_profile.InterviewProfile) o None.
+        self.interview = None
         self.history: list[Exchange] = []
         self.topics: dict[str, int] = {}
 
@@ -117,6 +120,21 @@ class ContextManager:
     def asked_questions(self) -> list[str]:
         return [ex.question for ex in self.history]
 
+    def interview_block(self) -> str:
+        """Tu .md completo (fuente de verdad) + la vacante elegida."""
+        iv = self.interview
+        if iv is None:
+            return ""
+        iv.refresh()
+        if not iv.loaded:
+            return ""
+        parts = ["## Candidate interview profile (SOURCE OF TRUTH: facts, wording rules, STAR stories)",
+                 iv.text.strip()]
+        t = iv.target(self.profile.target) if self.profile.target else None
+        if t:
+            parts += ["## Target role for this practice session", t.block()]
+        return "\n".join(parts)
+
     def profile_block(self) -> str:
         p = self.profile
         lines = [f"Interview type: {p.interview_type}"]
@@ -135,6 +153,8 @@ class ContextManager:
     def build(self, include_current: bool = True) -> str:
         """El bloque de contexto que acompana cada llamada al LLM."""
         parts = ["## Candidate profile", self.profile_block()]
+        if self.interview_block():
+            parts.append(self.interview_block())
         past = self.history if include_current else self.history[:-1]
         older, recent = past[:-self.window] if self.window else past, past[-self.window:] if self.window else []
         if older:

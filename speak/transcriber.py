@@ -39,6 +39,11 @@ class STTError(RuntimeError):
     pass
 
 
+class STTNetworkError(STTError):
+    """No hubo red (DNS, conexion caida, timeout): vale la pena reintentar o
+    caer a un respaldo local. Una llave mala o sin creditos NO es esto."""
+
+
 @dataclass
 class Segment:
     start: float
@@ -253,6 +258,146 @@ class AssemblyAISTT(SpeechToText):
         ]
 
 
+class DeepgramSTT(SpeechToText):
+    """Deepgram Nova-3 por REST, frase a frase (en vivo) y archivos (notas).
+
+    Frase a frase y no por websocket: el segmentador y el detector de turnos
+    siguen igual, y solo cambia quien convierte la frase en texto. Una frase de
+    2-3 s vuelve en ~0,3-0,6 s, contra 1,5-2 s de Whisper `small` en CPU.
+    Una conexion HTTPS por hilo (Notas en vivo transcribe dos pistas a la vez)
+    que se reutiliza: sin repetir el apreton TLS en cada frase.
+
+    Idioma: "" o None → "multi" (espanol e ingles mezclados en la misma frase).
+    """
+
+    name = "deepgram"
+    HOST = "api.deepgram.com"
+
+    def __init__(self, api_key: str, model: str = "nova-3", language: str | None = None,
+                 keyterms: list[str] | None = None, fallback_factory=None) -> None:
+        if not api_key:
+            raise STTError("falta DEEPGRAM_API_KEY en speak/.env (creala gratis en console.deepgram.com)")
+        self.api_key = api_key
+        self.model = model or "nova-3"
+        self.language = language or None
+        self.keyterms = [t.strip() for t in (keyterms or []) if t.strip()][:100]
+        self._local = threading.local()
+        # Si no hay red, la frase la transcribe Whisper local (se crea solo la
+        # primera vez que hace falta). None = sin respaldo.
+        self.fallback_factory = fallback_factory
+        self._fallback: SpeechToText | None = None
+        self._fallback_lock = threading.Lock()
+
+    def _conn(self):
+        import http.client
+
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = http.client.HTTPSConnection(self.HOST, timeout=30)
+            self._local.conn = conn
+        return conn
+
+    def _request(self, method: str, path: str, body: bytes | None = None,
+                 content_type: str = "audio/wav") -> dict:
+        headers = {"Authorization": f"Token {self.api_key}"}
+        if body is not None:
+            headers["Content-Type"] = content_type
+        # Reintentos con espera: una conexion reutilizada puede estar cerrada, y
+        # el DNS del Wi-Fi a veces falla un instante (medido 2026-09-30: un
+        # "getaddrinfo failed" suelto en medio de una llamada que iba bien).
+        waits = (0.0, 0.4, 1.2)
+        for attempt, wait in enumerate(waits, 1):
+            if wait:
+                time.sleep(wait)
+            conn = self._conn()
+            try:
+                conn.request(method, path, body=body, headers=headers)
+                resp = conn.getresponse()
+                data = resp.read()
+                break
+            except (OSError, ConnectionError, TimeoutError) as exc:
+                conn.close()
+                self._local.conn = None
+                if attempt == len(waits):
+                    raise STTNetworkError(f"no pude conectar con Deepgram: {exc}") from exc
+        if resp.status == 401:
+            raise STTError("Deepgram rechazo la llave (401): revisa DEEPGRAM_API_KEY en speak/.env")
+        if resp.status == 402:
+            raise STTError("Deepgram: se acabaron los creditos (402)")
+        if resp.status >= 400:
+            raise STTError(f"Deepgram {resp.status}: {data[:300].decode('utf-8', 'replace')}")
+        return json.loads(data.decode("utf-8"))
+
+    def _query(self, language: str | None, **extra) -> str:
+        from urllib.parse import urlencode
+
+        params = [("model", self.model), ("language", language or "multi"),
+                  ("smart_format", "true"), ("punctuate", "true"), *extra.items()]
+        params += [("keyterm", t) for t in self.keyterms]
+        return "/v1/listen?" + urlencode(params)
+
+    def warmup(self) -> None:
+        # Valida la llave al arrancar (y no a mitad de la primera respuesta).
+        self._request("GET", "/v1/projects")
+
+    def transcribe(self, audio: np.ndarray, sample_rate: int, prompt: str = "") -> str:
+        return self.transcribe_lang(audio, sample_rate, prompt, self.language)[0]
+
+    def transcribe_lang(self, audio: np.ndarray, sample_rate: int, prompt: str = "",
+                        language: str | None = None) -> tuple[str, str | None, float]:
+        body = _wav_bytes(audio, sample_rate)
+        try:
+            res = self._request("POST", self._query(language), body)
+        except STTNetworkError as exc:
+            fb = self._get_fallback()
+            if fb is None:
+                raise
+            log.warning("Deepgram sin red (%s): esta frase va con Whisper local", exc)
+            return fb.transcribe_lang(audio, sample_rate, prompt, language)
+        alt = res["results"]["channels"][0]["alternatives"][0]
+        text = (alt.get("transcript") or "").strip()
+        if looks_like_hallucination(text, len(audio) / sample_rate):
+            text = ""
+        langs = alt.get("languages") or []
+        return text, (langs[0] if langs else language), float(alt.get("confidence") or 0.0)
+
+    def _get_fallback(self) -> SpeechToText | None:
+        if self.fallback_factory is None:
+            return None
+        with self._fallback_lock:
+            if self._fallback is None:
+                self._fallback = self.fallback_factory()
+            return self._fallback
+
+    def transcribe_file(self, path: Path) -> list[Segment]:
+        path = Path(path)
+        ctype = "audio/wav" if path.suffix.lower() == ".wav" else "application/octet-stream"
+        res = self._request("POST", self._query(self.language, diarize="true", utterances="true"),
+                            path.read_bytes(), ctype)
+        utts = res.get("results", {}).get("utterances") or []
+        speakers = {u.get("speaker") for u in utts}
+        return [
+            Segment(start=u["start"], end=u["end"], text=u["transcript"].strip(),
+                    speaker=chr(ord("A") + int(u["speaker"])) if len(speakers) > 1 else "")
+            for u in utts if u.get("transcript", "").strip()
+        ]
+
+
+def _wav_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
+    import io
+    import wave
+
+    pcm = np.clip(audio, -1.0, 1.0)
+    pcm = (pcm * 32767).astype("<i2").tobytes()
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
 def make_stt(cfg, for_files: bool = False, model: str | None = None,
              language: str | None = None) -> SpeechToText:
     """El modo en vivo siempre usa el local; los archivos pueden ir a la API.
@@ -260,6 +405,13 @@ def make_stt(cfg, for_files: bool = False, model: str | None = None,
     `language` reemplaza a STT_LANGUAGE ("" = detectar; Notas de llamada usa
     NOTES_STT_LANGUAGE)."""
     lang = cfg.STT_LANGUAGE if language is None else language
+    if cfg.STT_PROVIDER == "deepgram":
+        return DeepgramSTT(getattr(cfg, "DEEPGRAM_API_KEY", ""),
+                           getattr(cfg, "DEEPGRAM_MODEL", "nova-3"), lang,
+                           getattr(cfg, "DEEPGRAM_KEYTERMS", "").split(","),
+                           fallback_factory=lambda: FasterWhisperSTT(
+                               cfg.STT_LIVE_MODEL or "base", cfg.STT_DEVICE, cfg.STT_COMPUTE_TYPE,
+                               lang or None, cfg.STT_THREADS))
     if for_files and cfg.STT_PROVIDER == "assemblyai":
         return AssemblyAISTT(cfg.ASSEMBLYAI_API_KEY, lang)
     return FasterWhisperSTT(model or cfg.STT_MODEL, cfg.STT_DEVICE, cfg.STT_COMPUTE_TYPE,

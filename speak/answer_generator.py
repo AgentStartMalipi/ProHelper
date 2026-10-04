@@ -67,6 +67,13 @@ def question_prompt(ctx: ContextManager, forced_type: str | None = None) -> Prom
         user.append("Do NOT repeat or closely paraphrase any question already asked this session.")
     if not ctx.history:
         user.append("This is the first question: open with a one-sentence greeting, then the question.")
+    if ctx.interview_block():
+        user.append(
+            "A candidate interview profile is provided. Ask what the TARGET ROLE's interviews really test "
+            "(see 'What their interviews test'); if no target is set, pick from her active applications. "
+            "Favour her listed weak spots to practise, and questions that make her be precise about what was "
+            "production vs prototype, and what was hers vs her team's. Behavioral questions should be "
+            "answerable from her real experience. Never mention the profile, its rules or which story to use.")
     user.append("Say only the question now.")
     return Prompt(INTERVIEWER_SYSTEM.format(language=_lang(ctx.profile.language)), "\n".join(user))
 
@@ -139,6 +146,22 @@ tied to the role, and a closing line.""",
 }
 
 
+PROFILE_RULES = """
+
+A candidate interview profile is included in the context: it is the SOURCE OF TRUTH.
+The profile describes the candidate in the third person, but YOU are talking to her: address her as "you"
+in FEEDBACK, and write QUICK ANSWER and DETAILED ANSWER in the first person ("I"), ready to say out loud.
+- In FEEDBACK, after the strengths/weaknesses bullets, add a bold line **Profile check:** followed by bullets
+  that quote anything in her answer that the profile does not support or that breaks its rules: overclaims
+  (e.g. calling a prototype "production", "worked for a bank", "SDE Intern", root cause analysis at Amadeus),
+  claimed tools or skills from the must-NOT-claim list, banned words, team numbers presented as hers.
+  If everything was accurate, write "- Accurate: nothing beyond your profile."
+  Also name the STAR story from the profile that fits this question best, if it is not the one she used.
+- In QUICK ANSWER and DETAILED ANSWER use ONLY facts from the profile and its exact allowed wording. Where the
+  question needs something the profile does not have, write [not in your profile] and show how to answer
+  honestly with the closest real experience. Never invent experience, numbers, tools or titles."""
+
+
 def evaluation_prompt(ctx: ContextManager, qtype: QType) -> Prompt:
     ex = ctx.current
     effective = qtype
@@ -162,6 +185,8 @@ def evaluation_prompt(ctx: ContextManager, qtype: QType) -> Prompt:
     if previous:
         user += ["", "## Previous model answer (to modify)", previous]
     system = EVALUATOR_SYSTEM.format(structure=structure, language=_lang(ctx.profile.language))
+    if ctx.interview_block():
+        system += PROFILE_RULES
     return Prompt(system, "\n".join(user))
 
 

@@ -47,7 +47,9 @@ class Config:
     API_KEY: str = ""
 
     # --- Speech-to-text --------------------------------------------------
-    STT_PROVIDER: str = "faster_whisper"  # faster_whisper | assemblyai
+    # faster_whisper (local) | deepgram (nube, en vivo y archivos) |
+    # assemblyai (nube, solo archivos)
+    STT_PROVIDER: str = "faster_whisper"
     # small: buen punto en CPU (sin GPU NVIDIA). base = mas rapido,
     # medium/large-v3 = mas preciso y mucho mas lento en CPU.
     STT_MODEL: str = "small"
@@ -60,6 +62,18 @@ class Config:
     STT_LIVE_MODEL: str = "base"
     STT_THREADS: int = 0  # 0 = todos los nucleos
     ASSEMBLYAI_API_KEY: str = ""
+    DEEPGRAM_API_KEY: str = ""
+    # nova-3 entiende espanol e ingles mezclados con idioma "multi" (se usa
+    # cuando el idioma esta vacio).
+    DEEPGRAM_MODEL: str = "nova-3"
+    # Terminos que Deepgram debe reconocer tal cual (nombres tecnicos, marcas,
+    # personas), separados por coma. Medido: sin esto "Kubernetes" salia
+    # "Cubaernet's" y "Redis" "Ready's"; con esto, bien incluso con ruido.
+    DEEPGRAM_KEYTERMS: str = (
+        "Kubernetes,Redis,Kafka,Terraform,Docker,PostgreSQL,DynamoDB,MongoDB,AWS,Azure,"
+        "GCP,S3,EC2,Lambda,API,REST,gRPC,GraphQL,SQL,NoSQL,Python,TypeScript,React,"
+        "LeetCode,STAR,RPO,RTO,SLA,KPI,ERP,SAP,Power BI,Dynamics 365,CI/CD,"
+        "hackathon,microservices,Ecoeffy,Efinetico,OBC")
 
     # --- Audio / turnos --------------------------------------------------
     MIC_DEVICE: str = ""  # "" = el predeterminado de Windows; si no, el indice
@@ -80,6 +94,11 @@ class Config:
     MAX_SILENCE: int = 6000
     # Energia minima (RMS 0..1) para considerar que hay voz. 0 = automatico.
     VAD_THRESHOLD: float = 0.0
+
+    # --- Perfil de entrevista (solo simulador) ---------------------------
+    # Tu .md con hechos, reglas, historias STAR y vacantes. Se relee cuando
+    # cambia. Vacio = sin perfil (solo los campos de la ventana).
+    INTERVIEW_PROFILE: str = ""
 
     # --- Contexto --------------------------------------------------------
     # Intercambios recientes que viajan completos; los anteriores, resumidos.
@@ -150,6 +169,19 @@ class Config:
             existing[f.name] = str(value).lower() if isinstance(value, bool) else str(value)
         lines = [f"{k}={v}" for k, v in existing.items()]
         env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def set_env_value(key: str, value: str, env_file: Path = ENV_FILE) -> None:
+    """Cambia (o agrega) UNA linea de .env, sin tocar el resto ni los
+    comentarios (a diferencia de `Config.save`, que reescribe todo)."""
+    lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
+    for i, line in enumerate(lines):
+        if line.split("=", 1)[0].strip() == key and not line.lstrip().startswith("#"):
+            lines[i] = f"{key}={value}"
+            break
+    else:
+        lines.append(f"{key}={value}")
+    env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _coerce(raw: str, kind: type):

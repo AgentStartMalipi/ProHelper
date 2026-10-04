@@ -50,6 +50,24 @@ hay.
 
 Como SCREEN, usa tu login de Claude Code: **no necesitas API key**.
 
+
+## ¿Dónde estoy?
+
+Al abrir SPEAK sale una pantalla de inicio con dos opciones: **🎓 Practicar una
+entrevista** o **📞 Llamada real**. Cada ventana tiene arriba una franja de
+color que dice qué está pasando:
+
+| Color | Significa |
+|---|---|
+| 🟣 Morada | Práctica: la app es el entrevistador |
+| ⚪ Gris | Llamadas, sin grabar (dice si el copiloto se activará) |
+| 🔴 Roja | **En llamada**: grabando con copiloto activo, con el reloj |
+| 🟠 Naranja | Grabando **solo notas**, sin copiloto (y por qué) |
+| 🔵 Azul | Procesando la transcripción y las notas |
+
+El título de la ventana dice lo mismo, para distinguirlas en la barra de tareas.
+`run_speak.bat notes` abre directo Llamadas; `python -m speak --practice`, el simulador.
+
 ## Simulador
 
 1. A la izquierda: tipo de entrevista, idioma, puesto, empresa, y pega tu CV y
@@ -221,6 +239,7 @@ Por consola:
 |---|---|
 | `LLM_PROVIDER` | `claude_cli` (tu login) o `anthropic` (SDK + `API_KEY`) |
 | `LLM_MODEL` | Id completo. `claude-sonnet-5` de serie: medido, primer token ~2,5 s. Haiku 4.5 tardó 28 s en el primer token |
+| `STT_PROVIDER` | `faster_whisper` (local, gratis) o `deepgram` (nube, Nova-3: mucho mas preciso, entiende espanol e ingles mezclados; $200 gratis en console.deepgram.com, llave en `DEEPGRAM_API_KEY`) |
 | `STT_MODEL` | `base` (más rápido), `small` (de serie), `medium` / `large-v3` (más preciso, lento en CPU) |
 | `STT_LANGUAGE` | idioma del simulador: `en`, `es` o vacío (autodetectar) |
 | `NOTES_STT_LANGUAGE` | idioma que se habla en Notas de llamada. Vacío (de serie): lo detecta en las primeras frases de cada hablante y lo fija. Medido: con `en`, una llamada en español sale traducida al inglés (109% de error); detectar en cada frase es 2× más lento |

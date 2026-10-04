@@ -1,7 +1,8 @@
 """Punto de entrada de SPEAK.
 
-    python -m speak           abre el simulador
-    python -m speak --notes   abre directo Notas de llamada
+    python -m speak             pantalla de inicio (practicar o llamada real)
+    python -m speak --practice  abre directo el simulador
+    python -m speak --notes     abre directo Llamadas (copiloto y notas)
     python -m speak --check   revisa microfono, modelo de voz y LLM (sin UI)
     python -m speak --mics    prueba cada microfono con tu voz y dice cual usar
     python -m speak --mics --auto   lo mismo, sin pulsar Enter (cuenta regresiva)
@@ -75,7 +76,9 @@ def check(cfg: Config) -> int:
         stt = make_stt(cfg)
         stt.warmup()
         text = stt.transcribe(np.zeros(16000, dtype=np.float32), 16000)
-        print(f"Modelo de voz '{cfg.STT_MODEL}': OK ({time.time() - t0:.1f}s; silencio → {text!r})")
+        label = (f"Deepgram {cfg.DEEPGRAM_MODEL}" if cfg.STT_PROVIDER == "deepgram"
+                 else f"Whisper '{cfg.STT_MODEL}'")
+        print(f"Modelo de voz {label}: OK ({time.time() - t0:.1f}s; silencio → {text!r})")
     except Exception as exc:
         ok = False
         print(f"Modelo de voz: FALLA → {exc}")
@@ -208,7 +211,8 @@ def mics(cfg: Config, seconds: float = 5.0, auto: bool = False) -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m speak")
-    ap.add_argument("--notes", action="store_true", help="abrir Notas de llamada")
+    ap.add_argument("--notes", action="store_true", help="abrir Llamadas (copiloto y notas)")
+    ap.add_argument("--practice", action="store_true", help="abrir el simulador de entrevistas")
     ap.add_argument("--check", action="store_true", help="diagnostico sin UI")
     ap.add_argument("--mics", action="store_true", help="probar cada microfono con tu voz")
     ap.add_argument("--auto", action="store_true", help="con --mics: sin pulsar Enter")
@@ -228,16 +232,20 @@ def main(argv=None) -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName("SPEAK")
+    from .ui.home_window import HomeWindow, open_calls, open_practice
+
+    # El simulador se arma al abrirlo, no al arrancar: abrir solo Llamadas no
+    # paga la carga del modelo de voz del simulador.
+    def sim_factory(listener):
+        return Simulator(cfg, make_llm(cfg), make_stt(cfg), listener)
+
+    home = HomeWindow(cfg, sim_factory)
     if args.notes:
-        from .ui.notes_window import NotesWindow
-
-        win = NotesWindow(cfg)
+        open_calls(cfg)
+    elif args.practice:
+        open_practice(cfg)
     else:
-        from .ui.main_window import MainWindow
-
-        llm, stt = make_llm(cfg), make_stt(cfg)
-        win = MainWindow(cfg, lambda listener: Simulator(cfg, llm, stt, listener))
-    win.show()
+        home.show()
     return app.exec()
 
 

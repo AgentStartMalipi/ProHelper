@@ -47,6 +47,7 @@ from ..notes.analyzer import MODES, generate_notes, heuristic_report, me_share
 from ..notes.copilot import COPILOT_MODES, Copilot, Discovery, PrepSession, attach_file
 from ..notes.pipeline import ME, THEM, Transcript, _fmt, load_any, parse_transcript_text, render
 from ..transcriber import FasterWhisperSTT, make_stt
+from .banner import ModeBanner
 from .bridge import LiveSignals, TaskSignals
 from .prep_window import PasteDialog, PrepWindow, load_prep, save_prep
 
@@ -55,7 +56,7 @@ class NotesWindow(QMainWindow):
     def __init__(self, cfg: Config) -> None:
         super().__init__()
         self.cfg = cfg
-        self.setWindowTitle("SPEAK — Notas de llamada")
+        self.setWindowTitle("SPEAK · 📞 Llamadas")
         self.resize(1400, 820)
         self.recorder = None
         self.live_notes = None
@@ -95,10 +96,13 @@ class NotesWindow(QMainWindow):
         self._tick = QTimer(self)
         self._tick.setInterval(200)
         self._tick.timeout.connect(self._update_rec)
+        self._refresh_banner()
 
     def _build(self) -> None:
         central = QWidget()
         lay = QVBoxLayout(central)
+        self.banner = ModeBanner()
+        lay.addWidget(self.banner)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Tipo:"))
@@ -242,6 +246,7 @@ class NotesWindow(QMainWindow):
         self.btn_attach.clicked.connect(self._attach)
         self.btn_paste.clicked.connect(self._paste)
         self.mode.currentTextChanged.connect(self._mode_changed)
+        self.live.toggled.connect(lambda _: self._refresh_banner())
         self.out_transcript.textChanged.connect(
             lambda: self.btn_notes.setEnabled(bool(self.out_transcript.toPlainText().strip())))
 
@@ -271,6 +276,7 @@ class NotesWindow(QMainWindow):
         # Abrir el audio del sistema (PyAudio) tarda 2-3 s: en un hilo, para que
         # la ventana no se congele. `_recording_opened` termina el arranque.
         self.btn_rec.setEnabled(False)
+        self._refresh_banner()
         self.live.setEnabled(False)
         self._status("Abriendo microfono y audio del sistema...")
 
@@ -310,6 +316,7 @@ class NotesWindow(QMainWindow):
                      + (f" ({' · '.join(devices)})" if devices else "")
                      + (f" — ⚠ {warn}" if warn else ""), error=bool(warn))
         self._tick.start()
+        self._refresh_banner()
 
     # --- en vivo --------------------------------------------------------------
 
@@ -385,10 +392,16 @@ class NotesWindow(QMainWindow):
         try:
             self._live_stt().warmup()
         except Exception as exc:
-            self.live_sig.status.emit(f"modelo de voz: {exc}")
+            # Si cerraron la ventana (o la app) mientras cargaba, ya no hay a
+            # quien avisar: la senal esta borrada y Python se esta apagando.
+            try:
+                self.live_sig.status.emit(f"modelo de voz: {exc}")
+            except RuntimeError:
+                pass
 
     def _mode_changed(self, mode: str) -> None:
         self.prep.mode = mode
+        self._refresh_banner()
         if self.live_notes:
             self.live_notes.mode = mode
         if self.copilot:
@@ -559,7 +572,41 @@ class NotesWindow(QMainWindow):
         if self.live_notes:
             self.out_notes.setMarkdown("*Borrador en vivo*\n\n" + md)
 
+    def _refresh_banner(self) -> None:
+        """La franja y el titulo dicen en que estas: lista, grabando con o sin
+        copiloto, o procesando. Ver `banner.py` por los colores."""
+        from ..notes.copilot import COPILOT_MODES
+
+        if not hasattr(self, "banner"):
+            return
+        mode = self.mode.currentText()
+        recording = self.recorder is not None or getattr(self, "_opening", None) is not None
+        copilot_on = (self.cfg.COPILOT_ENABLED and self.live.isChecked() and mode in COPILOT_MODES)
+        why_off = ("modo entrevista: el copiloto no sopla respuestas" if mode == "entrevista"
+                   else "copiloto apagado" if not self.cfg.COPILOT_ENABLED
+                   else "sin 'En vivo'" if not self.live.isChecked() else "")
+        clock = ""
+        if recording and self.recorder is not None:
+            t = int(self.recorder.elapsed)
+            clock = f"  ·  {t // 60:02d}:{t % 60:02d}"
+        if recording and copilot_on:
+            kind, text, title = ("live", f"● EN LLAMADA  ·  GRABANDO  ·  COPILOTO ACTIVO ({mode}){clock}",
+                                 "● EN LLAMADA · copiloto")
+        elif recording:
+            kind, text, title = ("notes", f"● GRABANDO  ·  SOLO NOTAS, SIN COPILOTO ({why_off}){clock}",
+                                 "● GRABANDO · solo notas")
+        elif getattr(self, "_busy", False):
+            kind, text, title = ("busy", "⏳ PROCESANDO — transcribiendo y armando las notas de la llamada",
+                                 "procesando")
+        else:
+            state = ("el copiloto se activa al grabar" if copilot_on
+                     else f"al grabar: solo notas ({why_off})")
+            kind, text, title = ("idle", f"📞 LLAMADAS — sin grabar  ·  modo {mode}  ·  {state}", "Llamadas")
+        self.banner.set_state(kind, text)
+        self.setWindowTitle(f"SPEAK · 📞 {title}")
+
     def _update_rec(self) -> None:
+        self._refresh_banner()
         if not self.recorder:
             return
         t = int(self.recorder.elapsed)
@@ -577,6 +624,7 @@ class NotesWindow(QMainWindow):
         self.btn_rec.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.live.setEnabled(True)
+        self._refresh_banner()
         self._run(lambda: load_any(folder, self._stt, self.sig.progress.emit), "transcript")
 
     # --- importar -------------------------------------------------------------
@@ -673,6 +721,8 @@ class NotesWindow(QMainWindow):
         self.tabs.setCurrentWidget(self.out_transcript)
 
     def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        self._refresh_banner()
         for b in (self.btn_rec, self.btn_audio, self.btn_text, self.btn_notes):
             b.setEnabled(not busy)
         if not busy:

@@ -423,11 +423,25 @@ class Simulator:
         self._set_phase(Phase.EVALUATING)
         self.detector.mark_generating()
         self.ui.status("Evaluando tu respuesta...")
+        # Palabras que tu perfil prohibe: se marcan al instante, sin esperar al
+        # LLM, y quedan al inicio del feedback.
+        self._eval_prefix = ""
+        iv = self.ctx.interview
+        if iv is not None and self.ctx.current:
+            iv.refresh()
+            from .interview_profile import banned_hits
+
+            hits = banned_hits(self.ctx.current.answer, iv.banned_words)
+            if hits:
+                self._eval_prefix = "⚠ **Palabras a evitar (tu perfil):** " + ", ".join(hits) + "\n\n"
+        if self._eval_prefix:
+            self.ui.evaluation(split_sections(self._eval_prefix), False)
         self._run_stream(lambda cancel: self.gen.evaluate(qtype, cancel),
-                         on_chunk=lambda acc: self.ui.evaluation(split_sections(acc), False),
+                         on_chunk=lambda acc: self.ui.evaluation(split_sections(self._eval_prefix + acc), False),
                          on_done="evaluated")
 
     def _on_evaluated(self, markdown):
+        markdown = getattr(self, "_eval_prefix", "") + markdown
         sections = split_sections(markdown)
         self.ctx.record_feedback(
             sections["FEEDBACK"],

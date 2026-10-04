@@ -9,6 +9,7 @@ feedback, el QUICK ANSWER y el DETAILED ANSWER.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import (
 
 from ..config import DATA_DIR, Config
 from ..simulator import Phase, Simulator
+from .banner import ModeBanner
 from .bridge import SimSignals
 from .settings_dialog import SettingsDialog
 
@@ -63,7 +65,7 @@ class MainWindow(QMainWindow):
     def __init__(self, cfg: Config, sim_factory) -> None:
         super().__init__()
         self.cfg = cfg
-        self.setWindowTitle("SPEAK — Simulador de entrevistas")
+        self.setWindowTitle("SPEAK · 🎓 Práctica de entrevista")
         self.resize(1280, 860)
         self.signals = SimSignals()
         self.sim: Simulator = sim_factory(self.signals.listener())
@@ -80,6 +82,9 @@ class MainWindow(QMainWindow):
         central = QWidget()
         root = QVBoxLayout(central)
 
+        self.banner = ModeBanner()
+        root.addWidget(self.banner)
+
         bar = QHBoxLayout()
         self.btn_start = QPushButton("▶ Start Listening")
         self.btn_pause = QPushButton("⏸ Pause")
@@ -89,7 +94,7 @@ class MainWindow(QMainWindow):
         self.btn_regen = QPushButton("⟳ Regenerate")
         self.btn_clear = QPushButton("🗑 Clear Context")
         self.btn_settings = QPushButton("⚙ Settings")
-        self.btn_notes = QPushButton("📝 Notas de llamada")
+        self.btn_notes = QPushButton("📞 Ir a Llamadas")
         for b in (self.btn_start, self.btn_pause, self.btn_done, self.btn_next, self.btn_follow,
                   self.btn_regen, self.btn_clear, self.btn_settings):
             bar.addWidget(b)
@@ -123,9 +128,33 @@ class MainWindow(QMainWindow):
         root.addWidget(split, 1)
         self.setCentralWidget(central)
 
+    def _interview_box(self) -> QGroupBox:
+        """Tu .md de entrevista: el entrevistador y el evaluador lo usan, y se
+        relee solo cuando lo editas."""
+        box = QGroupBox("Tu perfil de entrevista")
+        lay = QVBoxLayout(box)
+        self.lbl_iv = QLabel("")
+        self.lbl_iv.setWordWrap(True)
+        lay.addWidget(self.lbl_iv)
+        row = QHBoxLayout()
+        pick = QPushButton("Elegir .md...")
+        pick.clicked.connect(self._pick_interview_file)
+        open_btn = QPushButton("Abrir")
+        open_btn.clicked.connect(self._open_interview_file)
+        row.addWidget(pick)
+        row.addWidget(open_btn)
+        lay.addLayout(row)
+        form = QFormLayout()
+        self.in_target = QComboBox()
+        self.in_target.currentTextChanged.connect(self._target_changed)
+        form.addRow("Vacante", self.in_target)
+        lay.addLayout(form)
+        return box
+
     def _profile_panel(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
+        lay.addWidget(self._interview_box())
         form = QFormLayout()
         self.in_type = QComboBox()
         self.in_type.addItems(["Mixta", "Behavioral", "Coding", "System design", "Technical"])
@@ -264,6 +293,69 @@ class MainWindow(QMainWindow):
         self.in_notes.setPlainText(p.candidate_info)
         self.in_cv.setPlainText(p.cv)
         self.in_jd.setPlainText(p.job_description)
+        self._attach_interview(self.cfg.INTERVIEW_PROFILE)
+
+    # --- perfil de entrevista (.md) -------------------------------------------
+
+    def _attach_interview(self, path: str) -> None:
+        from ..interview_profile import load
+
+        self.sim.ctx.interview = load(path) if path else None
+        self._fill_targets()
+        # Lo editas mientras practicas: se revisa cada pocos segundos y, si
+        # cambio, se actualizan las vacantes (el texto se relee en cada pregunta).
+        if not hasattr(self, "_iv_timer"):
+            self._iv_timer = QTimer(self)
+            self._iv_timer.setInterval(4000)
+            self._iv_timer.timeout.connect(self._check_interview_file)
+            self._iv_timer.start()
+
+    def _check_interview_file(self) -> None:
+        iv = self.sim.ctx.interview
+        if iv is not None and iv.refresh():
+            self._fill_targets()
+
+    def _fill_targets(self) -> None:
+        iv = self.sim.ctx.interview
+        keep = self.sim.ctx.profile.target
+        self.in_target.blockSignals(True)
+        self.in_target.clear()
+        self.in_target.addItem("(general: el entrevistador elige)")
+        if iv is not None and iv.loaded:
+            self.in_target.addItems([t.label for t in iv.targets])
+            self.lbl_iv.setText(f"✔ {iv.path.name} · {len(iv.text):,} caracteres · "
+                                f"{len(iv.targets)} vacantes. Se relee al editarlo.")
+            self.lbl_iv.setStyleSheet("")
+        else:
+            missing = iv is not None and iv.path is not None
+            self.lbl_iv.setText("⚠ No encuentro el archivo." if missing else
+                                "Sin perfil: elige tu .md con hechos, reglas e historias STAR.")
+            self.lbl_iv.setStyleSheet("color: #e67e22;" if missing else "color: gray;")
+        i = self.in_target.findText(keep) if keep else 0
+        self.in_target.setCurrentIndex(max(0, i))
+        self.in_target.blockSignals(False)
+
+    def _target_changed(self, label: str) -> None:
+        iv = self.sim.ctx.interview
+        t = iv.target(label) if iv is not None else None
+        self.sim.ctx.profile.target = t.label if t else ""
+        if t:
+            self.in_company.setText(t.label.split(" — ")[0])
+            self.in_role.setText(t.role)
+
+    def _pick_interview_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Tu perfil de entrevista", "", "Markdown (*.md *.txt)")
+        if path:
+            from ..config import set_env_value
+
+            self.cfg.INTERVIEW_PROFILE = path
+            set_env_value("INTERVIEW_PROFILE", path)
+            self._attach_interview(path)
+
+    def _open_interview_file(self) -> None:
+        iv = self.sim.ctx.interview
+        if iv is not None and iv.path is not None and iv.path.exists():
+            os.startfile(str(iv.path))
 
     def _load_cv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "CV en texto", "", "Texto (*.txt *.md)")
@@ -314,17 +406,18 @@ class MainWindow(QMainWindow):
         SettingsDialog(self.cfg, self).exec()
 
     def _open_notes(self) -> None:
-        from .notes_window import NotesWindow
+        # La misma ventana que abre la pantalla de inicio: nunca dos Llamadas.
+        from .home_window import open_calls
 
-        if self._notes_window is None:
-            self._notes_window = NotesWindow(self.cfg)
-        self._notes_window.show()
-        self._notes_window.raise_()
+        self._notes_window = open_calls(self.cfg)
 
     # --- slots ----------------------------------------------------------------
 
     def _on_phase(self, phase: str) -> None:
         self.lbl_phase.setText(_PHASE_LABEL.get(phase, phase))
+        self.banner.set_state(
+            "practice", "🎓 PRÁCTICA DE ENTREVISTA — la app es el entrevistador; nada de esto es una "
+            f"llamada real  ·  {_PHASE_LABEL.get(phase, phase)}")
         idle = phase == "IDLE"
         self.btn_start.setEnabled(phase in ("IDLE", "PAUSED"))
         self.btn_start.setText("▶ Reanudar" if phase == "PAUSED" else "▶ Start Listening")
