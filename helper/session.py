@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import claude_client
+from .memoria import Entry
 
 
 # Largo del titulo de una sesion. Da para reconocerla de un vistazo sin comerse
@@ -62,6 +63,17 @@ class Session:
     # dentro de una sesion quiero poder subir a releer lo anterior.
     historial: list[tuple[str, str | None]] = field(default_factory=list)
     last_hint: str = ""
+    # "Usar pasados": si esta marcado, cada captura sigue la conversacion de la
+    # sesion y Claude ve las anteriores. Si no, la captura va sola (pre-prompt
+    # + esta imagen) en una conversacion nueva: mucho mas barato, porque
+    # reanudar re-envia todas las capturas previas en cada turno.
+    use_history: bool = True
+    # Turnos enviados a la conversacion PRINCIPAL. No es `captures`: las sueltas
+    # no la tocan, y al volver a marcar "Usar pasados" se sigue donde iba.
+    history_turns: int = 0
+    # Memoria por resumen (ver memoria.py): una nota por captura con pasados.
+    # Solo se llena con history_mode "resumen"; en "imagenes" manda --resume.
+    memoria: list[Entry] = field(default_factory=list)
     _shots_dir: Path | None = field(default=None, repr=False)
 
     @property
@@ -72,16 +84,29 @@ class Session:
         return self._shots_dir
 
     def next_shot_path(self) -> Path:
-        return self.shots_dir / f"shot-{self.captures + 1:03d}.png"
+        return self.shot_path(self.captures + 1)
+
+    def shot_path(self, n: int) -> Path:
+        """La captura numero `n` de la sesion (para pedirla de vuelta)."""
+        return self.shots_dir / f"shot-{n:03d}.png"
 
     @property
     def started(self) -> bool:
-        """True si ya hubo un turno, o sea si toca --resume en vez de abrir."""
-        return self.captures > 0
+        """True si la conversacion principal ya existe (toca --resume)."""
+        return self.history_turns > 0
 
-    def record(self, cost_usd: float) -> None:
+    def conversation_for_next(self) -> tuple[str, bool]:
+        """(id de conversacion, resume) para la proxima captura."""
+        if self.use_history:
+            return self.session_id, self.started
+        return claude_client.new_session_id(), False
+
+    def record(self, cost_usd: float, in_history: bool = True) -> None:
+        """`in_history`: el turno fue a la conversacion principal (no suelto)."""
         self.captures += 1
         self.total_cost_usd += cost_usd
+        if in_history:
+            self.history_turns += 1
 
     def remember(
         self,

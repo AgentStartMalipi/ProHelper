@@ -45,6 +45,25 @@ encima y se alcanza con la rueda del ratón o con `Alt+5`.
 La cajita de abajo es para una pregunta puntual: escribes ahí y Enter captura
 con esa pregunta en vez del pre-prompt.
 
+**Usar pasados** (la casilla debajo de la cajita, marcada por defecto): con ella
+marcada, Claude recuerda las capturas anteriores de la sesión. Desmárcala para
+preguntas sueltas: esa captura va sola (pre-prompt + la imagen actual). Cada
+sesión recuerda su propia casilla.
+
+Cómo recuerda se elige en `⚙` → **Cómo recuerda "Usar pasados"**:
+
+- **Resumen** (de serie). No re-envía imágenes viejas. Claude cierra cada
+  respuesta con una nota oculta (`MEMO: …`) de lo que importaba en esa pantalla
+  — el enunciado, los números, el estado del código —, y la captura siguiente
+  lleva solo la imagen actual más esas notas y el principio de cada respuesta.
+  Si la nota no basta, Claude contesta `NEED: 3` y el helper le re-envía esa
+  captura (siguen en disco hasta cerrar la sesión). Medido: **~$0.025 por
+  captura, sea la segunda o la trigésima**; una que pide una imagen de vuelta,
+  ~$0.06.
+- **Imágenes**. Reanuda la conversación y Claude ve todas las capturas de
+  verdad. Lo más fiel, pero re-envía todas en cada turno: medido, la tercera
+  $0.14 y la trigésima $1.13.
+
 ### Plantillas
 
 En el diálogo de nueva sesión, a un clic. El botón muestra el nombre, no el
@@ -60,6 +79,7 @@ texto, así que caben prompts de varios párrafos:
 | Solo el enfoque, sin código | Para resolverlo tú |
 | Encontrar el error | Diagnóstico de lo que falle en pantalla |
 | **Data science: opción múltiple (rápido)** | Va directo a la letra correcta con una frase de por qué. Para quizzes de estadística, ML, pandas, SQL. Escrita en inglés, así que responde en inglés (para español, ⚙ → Idioma) |
+| **Aptitud SHL / Cubiks / Saville (banca)** | Pruebas de aptitud de bancos y consultoras: numérico, verbal (True / False / Cannot Say), lógico y juicio situacional. Responde `ANSWER / CONFIDENCE / WHY / SHORTCUT`, avisa si falta algo en la imagen y nunca deja una sin responder. En inglés |
 | **Depurar repo desconocido (con memoria)** | Compañero de depuración iterativo. Capturas el error, luego código/pistas de otra IA, y va armando el diagnóstico apoyándose en las anteriores. Las correcciones vienen con archivo, rango de líneas, `REEMPLAZA`/`INSERTA` y bloques **antes/después** con líneas de ancla. Cada respuesta cierra con un paso: qué archivo y qué líneas capturar y qué significaría cada resultado — o, si vamos a ciegas, el mensaje literal para pegarle a la IA que te guía el repo |
 | Traducir al español | |
 
@@ -181,9 +201,10 @@ funciona igual, sin la exclusión. Para volver a permitir la captura está
 Se factura contra tu suscripción de Claude Code. Una captura sale en **~$0.03**
 y tarda **~4 segundos**.
 
-Ojo con las sesiones largas: cada turno reenvía las capturas anteriores, así
-que el costo por pregunta sube conforme la sesión crece. A las 10 capturas el
-panel te avisa. Cerrar la sesión y abrir otra resetea eso.
+Con **Usar pasados** en modo **Resumen** (de serie) el costo por captura no
+crece con la sesión. En modo **Imágenes** sí: cada turno reenvía las capturas
+anteriores, así que a las 10 capturas el panel te avisa; cerrar la sesión y
+abrir otra resetea eso.
 
 El helper llama al CLI con el harness apagado — sin skills, sin MCP, sin
 CLAUDE.md, sin herramientas y con un system prompt mínimo. No es cosmético: sin
@@ -226,6 +247,7 @@ helper/
   capture.py        captura por monitor / ventana activa, y reescalado
   claude_client.py  subproceso `claude -p`, imagen en base64 por stdin
   session.py        UUID de conversación + pre-prompt fijo + contador
+  memoria.py        pasados por resumen: notas MEMO y NEED para pedir una captura
   config.py         persistencia en %APPDATA% y el prompt del sistema
   lang.py           detecta si escribes en español o en inglés
   privacy.py        excluye las ventanas de las capturas (solo Windows)

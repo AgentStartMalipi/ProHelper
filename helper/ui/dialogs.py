@@ -446,6 +446,22 @@ class SettingsDialog(Modal):
         )
         self.effort.pack(fill="x")
 
+        field_label(self.content, "Como recuerda \"Usar pasados\"")
+        self.history_mode = OptionRow(
+            self.content,
+            [
+                ("resumen", "Resumen — notas de las anteriores; cuesta lo mismo siempre"),
+                ("imagenes", "Imagenes — re-envia todas; cada captura cuesta mas"),
+            ],
+            cfg["history_mode"],
+        )
+        self.history_mode.pack(fill="x")
+        hint_label(
+            self.content,
+            "Con resumen, Claude ve la captura actual y sus notas de las "
+            "anteriores, y si le hace falta pide ver alguna de nuevo.",
+        )
+
         field_label(self.content, "Target de captura por defecto")
         self.target = CaptureTargetPicker(
             self.content, cfg["capture"]["mode"], cfg["capture"]["monitor_index"]
@@ -486,6 +502,7 @@ class SettingsDialog(Modal):
             "language": self.language.get(),
             "model": self.model.get(),
             "effort": self.effort.get(),
+            "history_mode": self.history_mode.get(),
             "capture": self.target.get(),
             "concision": self.concision.get("1.0", "end").strip(),
         }

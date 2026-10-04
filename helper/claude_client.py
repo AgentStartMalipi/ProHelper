@@ -57,20 +57,30 @@ def new_session_id() -> str:
     return str(uuid.uuid4())
 
 
-def _user_message(text: str, image_path: Path | None) -> str:
+def _image_block(path: Path) -> dict:
+    data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": data},
+    }
+
+
+def _user_message(
+    text: str,
+    image_path: Path | None,
+    extra_images: list[tuple[str, Path]] | None = None,
+) -> str:
+    """`extra_images`: capturas anteriores pedidas de vuelta, (etiqueta, ruta).
+
+    Van primero, cada una precedida de su etiqueta, y la actual al final: asi
+    "la ultima imagen" es siempre la pantalla de ahora.
+    """
     content: list[dict] = []
+    for label, path in extra_images or []:
+        content.append({"type": "text", "text": label})
+        content.append(_image_block(path))
     if image_path is not None:
-        data = base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
-        content.append(
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/png",
-                    "data": data,
-                },
-            }
-        )
+        content.append(_image_block(image_path))
     content.append({"type": "text", "text": text})
     return json.dumps({"type": "user", "message": {"role": "user", "content": content}})
 
@@ -148,9 +158,10 @@ class ClaudeClient:
         timeout: float = 120.0,
         model: str | None = None,
         effort: str | None = None,
+        extra_images: list[tuple[str, Path]] | None = None,
     ) -> Reply:
         args = self._args(session_id, resume, system_prompt, model, effort)
-        payload = _user_message(question, image_path) + "\n"
+        payload = _user_message(question, image_path, extra_images) + "\n"
 
         try:
             proc = subprocess.run(

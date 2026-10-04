@@ -330,9 +330,69 @@ def test_session() -> None:
     check("acumula el costo", abs(s.total_cost_usd - 0.03) < 1e-9)
     check("la carpeta existe", s.shots_dir.exists())
 
+    section("[sesion] usar pasados")
+    conv, resume = s.conversation_for_next()
+    check("marcado: sigue la conversacion de la sesion", conv == s.session_id and resume)
+    s.use_history = False
+    conv, resume = s.conversation_for_next()
+    check("desmarcado: conversacion nueva, sin resumir", conv != s.session_id and not resume)
+    check("cada suelta es otra conversacion", s.conversation_for_next()[0] != conv)
+    turns = s.history_turns
+    s.record(0.01, in_history=False)
+    check("una suelta no cuenta como turno de la principal", s.history_turns == turns)
+    check("pero si como captura y costo", s.captures == 2 and abs(s.total_cost_usd - 0.04) < 1e-9)
+    s.use_history = True
+    check("al volver a marcar, retoma la principal",
+          s.conversation_for_next() == (s.session_id, True))
+    fresh = Session(preprompt="x", use_history=False)
+    fresh.record(0.01, in_history=False)
+    fresh.use_history = True
+    check("si la principal nunca existio, la abre en vez de resumir",
+          fresh.conversation_for_next() == (fresh.session_id, False))
+
     shots = s.shots_dir
     s.close()
     check("borra la carpeta al cerrar", not shots.exists())
+
+
+def test_memoria() -> None:
+    from helper import memoria
+    from helper.memoria import Entry
+
+    section("[memoria] la nota se separa de la respuesta")
+    limpio, memo = memoria.parse("**B) 42**\nPorque si.\n\nMEMO: tabla de ventas 2023, B=42")
+    check("quita la linea MEMO", "MEMO" not in limpio and limpio.endswith("Porque si."))
+    check("guarda la nota", memo == "tabla de ventas 2023, B=42", memo)
+    _, memo = memoria.parse("respuesta\n**MEMO:** `algo`  \n\n")
+    check("tolera negrita, backticks y lineas vacias al final", memo == "algo", memo)
+    texto, memo = memoria.parse("MEMO: no es la ultima\nsigue la respuesta")
+    check("solo cuenta si es la ultima linea", memo == "" and "MEMO" in texto)
+
+    section("[memoria] pedir capturas de vuelta")
+    check("NEED solo", memoria.needs("NEED: 2", 5) == [2])
+    check("varias y con #", memoria.needs("NEED: #1, #3", 5) == [1, 3])
+    check("nunca la actual ni futuras", memoria.needs("NEED: 5, 9", 5) == [])
+    check("maximo dos", len(memoria.needs("NEED: 1,2,3", 5)) == memoria.MAX_NEED)
+    check("NEED dentro de una respuesta no cuenta",
+          memoria.needs("La respuesta es B.\nNEED: 1", 5) == [])
+
+    section("[memoria] el prompt")
+    p1 = memoria.build_prompt([], "Q", 1)
+    check("la primera no ofrece NEED", "NEED" not in p1 and "MEMO" in p1)
+    largo = "x " * 2000
+    entries = [Entry(n=i, memo=f"nota {i}", answer=largo if i == 20 else f"resp {i}",
+                     question="mi duda" if i == 3 else "")
+               for i in range(1, 21)]
+    p = memoria.build_prompt(entries, "Q", 21)
+    check("lleva todas las notas", all(f"#{i}: nota {i}" in p for i in range(1, 21)))
+    # 20 notas, FULL_TURNS=12: de la #9 en adelante llevan respuesta.
+    check("las viejas sin respuesta", "resp 8" not in p and "resp 9" in p)
+    check("recorta respuestas largas", len(p) < 6000, str(len(p)))
+    check("lleva tus preguntas escritas", "my question: mi duda" in p)
+    check("ofrece NEED hasta la anterior", "from 1 to 20" in p)
+    pf = memoria.build_prompt(entries, "Q", 21, fetched=[4])
+    check("tras re-enviar, ya no ofrece NEED", "NEED is no longer allowed" in pf
+          and "from 1 to" not in pf)
 
 
 def test_app() -> None:
@@ -1148,6 +1208,16 @@ def test_varias_sesiones() -> None:
         check("cubre el caso de la peor opcion",
               "LEAST effective" in amazon["texto"])
 
+    section("[plantillas] pruebas de aptitud (SHL y similares)")
+    apt = next((p for p in cfg["presets"] if "SHL" in p["nombre"]), None)
+    check("la plantilla esta", apt is not None, str(nombres))
+    if apt:
+        t = apt["texto"]
+        check("formato fijo", all(k in t for k in
+              ("ANSWER:", "CONFIDENCE:", "WHY:", "SHORTCUT:")))
+        check("cubre True / False / Cannot Say", "Cannot Say" in t)
+        check("responde en ingles", t.rstrip().endswith("Answer in English."))
+
     app.panel.after(50, app.quit)
     app.run()
 
@@ -1159,6 +1229,7 @@ def main() -> int:
         test_capture,
         test_client,
         test_session,
+        test_memoria,
         test_app,
         test_plantillas,
         test_idioma,

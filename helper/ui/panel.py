@@ -244,6 +244,27 @@ class HelperPanel(tk.Tk):
         self.entry.bind("<FocusIn>", self._clear_placeholder)
         self.entry.bind("<FocusOut>", self._set_placeholder)
 
+        # Desmarcado: la captura va sola, sin re-enviar las anteriores (ahorra
+        # tokens). Por defecto marcado, como siempre funciono.
+        self.on_history_toggle: Callable[[bool], None] | None = None
+        self.use_history = tk.BooleanVar(value=True)
+        self.history_check = tk.Checkbutton(
+            self.footer,
+            text="Usar pasados (Claude ve las capturas anteriores)",
+            variable=self.use_history,
+            command=self._history_changed,
+            bg=theme.BG,
+            fg=theme.FG_FAINT,
+            activebackground=theme.BG,
+            activeforeground=theme.FG,
+            selectcolor=theme.BG_INPUT,
+            font=theme.FONT_SMALL,
+            anchor="w",
+            highlightthickness=0,
+            bd=0,
+        )
+        self.history_check.pack(fill="x", padx=theme.PAD - 2, pady=(0, 2))
+
         self.hint = tk.Label(
             self.footer,
             text="",
@@ -253,6 +274,14 @@ class HelperPanel(tk.Tk):
             anchor="w",
         )
         self.hint.pack(fill="x", padx=theme.PAD, pady=(0, 8))
+
+    def _history_changed(self) -> None:
+        if self.on_history_toggle is not None:
+            self.on_history_toggle(bool(self.use_history.get()))
+
+    def set_use_history(self, value: bool) -> None:
+        """Al cambiar de sesion: la casilla muestra la de ESA sesion."""
+        self.use_history.set(bool(value))
 
     def _fit_answer(self) -> None:
         """Ajusta el alto del area de respuesta a lo que ocupa el texto.

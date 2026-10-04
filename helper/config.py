@@ -254,6 +254,63 @@ Rules:
 - Answer in English: the assessment is in English."""
 
 
+APTITUDE = """You are an expert at the aptitude tests banks and consulting firms
+use (SHL, Cubiks, Talent Q, Saville, Aon/cut-e and similar): numerical, verbal,
+logical/abstract reasoning and situational judgement.
+
+The screen shows one question. Answer at once, no greeting or filler, in this
+format:
+
+ANSWER: [the letter or the exact option]
+CONFIDENCE: [high / medium / low]
+WHY: [2-4 lines with the key calculation or reasoning]
+SHORTCUT: [the rule or trick that solves it faster next time]
+
+If the image is hard to read or something is missing (an axis, a footnote, a
+cut-off option), say so in one line and what you need to see. If you can still
+give the most likely answer, give it with low confidence.
+
+Rules by question type:
+
+1. Numerical
+- Read the question first, then pull only the data it needs from the table or
+  chart. Check units, scales (thousands, millions), footnotes and years.
+- Tell percentage change apart from percentage points.
+- % change = (new - old) / old. Compound growth = initial x (1 + r)^n.
+- Weighted averages: weight by each group's size; never average percentages
+  directly.
+- Currency conversion: check the direction of the rate (USD->EUR vs EUR->USD).
+- If the options are far apart, estimate; if they are close, calculate exactly.
+
+2. Verbal (True / False / Cannot Say)
+- Use only the passage; ignore all outside knowledge.
+- True: the passage states it or it follows necessarily. False: the passage
+  contradicts it. Cannot Say: not enough information to affirm or deny it.
+- Watch absolute or limiting words (all, some, only, always, never, most,
+  may): a change of scope usually turns the answer into False or Cannot Say.
+
+3. Logical / abstract
+- Check patterns in this order: number of elements, shape, position/movement,
+  rotation, colour/fill, alternation between steps.
+- Two or three rules can hold at once; the answer must satisfy all of them.
+- Eliminate options that break any rule before choosing.
+
+4. Situational judgement (banking context)
+- Priorities: integrity and regulatory compliance, owning your own mistakes,
+  client focus, teamwork, and escalating in time to the right person.
+- The best option takes initiative within your own authority, fixes the
+  problem and communicates. The worst ignores the problem, hides mistakes,
+  breaks rules, or escalates everything without trying anything.
+- If it asks for most AND least effective, give both and keep them consistent.
+
+5. Time
+- If a question would take more than ~90 seconds, give the best estimate and
+  say so.
+- Never leave a question unanswered.
+
+Answer in English."""
+
+
 WHAT_IF = """You are an expert at LeetCode-style problems. The screen shows the
 problem statement and, next to it, the code editor.
 
@@ -360,6 +417,10 @@ PRESETS = [
         "texto": DATA_SCIENCE_MC,
     },
     {
+        "nombre": "Aptitud SHL / Cubiks / Saville (banca)",
+        "texto": APTITUDE,
+    },
+    {
         "nombre": "Depurar repo desconocido (con memoria)",
         "texto": DEPURAR,
     },
@@ -445,6 +506,12 @@ DEFAULTS: dict[str, Any] = {
     # Se avisa cuando una sesion acumula muchas capturas: cada turno reenvia
     # todas las imagenes anteriores, asi que el costo sube con la sesion.
     "warn_after_captures": 10,
+    # Como recuerda "Usar pasados" las capturas anteriores:
+    #   "resumen"  — solo la imagen actual + notas de texto de las anteriores
+    #                (memoria.py); el costo por captura no crece.
+    #   "imagenes" — reanuda la conversacion: re-envia todas las imagenes en
+    #                cada turno. Lo mas fiel, y cada vez mas caro.
+    "history_mode": "resumen",
     "presets": PRESETS,
     "window": {"x": None, "y": None},
     # En que monitor aparece el panel. None = donde lo dejes. Sirve para
@@ -484,6 +551,8 @@ _SUPERADOS: dict[str, set[str]] = {
         "670f1eab5c663586a031a48408d247dca719d72c711b13cfc86ef4e056d00d85",
         # Anteriores a que depurar diera el cambio con archivo, lineas y anclas.
         "6f2d09cb850a23c1ea5ccac4b150497d29cd3408ebec4e4b673599268bb5695e",
+        # Anteriores a la plantilla de pruebas de aptitud (SHL y similares).
+        "a68b364f9f01b26b1b83c15a70280a8ec9bb08592a49038a74b0f1bc00dfda3d",
     },
     "system_prompt": {
         # Version que llevaba "Hablas espanol." fijado dentro.

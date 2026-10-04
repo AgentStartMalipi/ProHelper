@@ -7,13 +7,14 @@ en una cola que el hilo de Tk drena con `after`.
 
 from __future__ import annotations
 
+import dataclasses
 import queue
 import threading
 import traceback
 from pathlib import Path
 
-from .. import capture, lang, privacy
-from ..claude_client import ClaudeClient, ClaudeError
+from .. import capture, lang, memoria, privacy
+from ..claude_client import ClaudeClient, ClaudeError, new_session_id
 from ..config import DEFAULT_QUESTION, Config
 from ..hotkey import HotkeyError, HotkeyListener, HotkeyManager
 from ..log import log
@@ -69,6 +70,7 @@ class App:
             on_edit_session=self.edit_session,
             on_capture=self.request_capture,
         )
+        self.panel.on_history_toggle = self._history_toggled
         self.panel.place_at(
             cfg["window"]["x"], cfg["window"]["y"], cfg["panel_monitor"]
         )
@@ -413,6 +415,11 @@ class App:
             return
         self.panel.show_session(self._status(), sesion.last_hint or self.hotkey_hint)
         self.panel.set_historial(sesion.historial)
+        self.panel.set_use_history(sesion.use_history)
+
+    def _history_toggled(self, value: bool) -> None:
+        if self.session is not None:
+            self.session.use_history = value
 
     def edit_session(self) -> None:
         """Cambia que se captura. El pre-prompt de la sesion no se toca.
@@ -537,18 +544,75 @@ class App:
 
     def _worker(self, session: Session, question: str, shot: Path) -> None:
         """Corre fuera del hilo de Tk: solo publica en la cola."""
+        if session.use_history and self.cfg["history_mode"] == "resumen":
+            self._worker_memoria(session, question, shot)
+            return
+        conv_id, resume = session.conversation_for_next()
         try:
             reply = self.client.send(
-                session_id=session.session_id,
+                session_id=conv_id,
                 question=question,
                 image_path=shot,
-                resume=session.started,
+                resume=resume,
                 system_prompt=self.cfg.full_system_prompt(session.preprompt),
                 model=session.model,    # la plantilla puede pedir uno mas rapido
                 effort=session.effort,
             )
-            log.info("respuesta en %dms, $%.3f", reply.duration_ms, reply.cost_usd)
-            self.events.put(("reply", (session.session_id, reply)))
+            log.info("respuesta en %dms, $%.3f (%s)", reply.duration_ms, reply.cost_usd,
+                     "con pasados" if conv_id == session.session_id else "suelta")
+            self.events.put(("reply", (session.session_id, reply, conv_id == session.session_id)))
+        except ClaudeError as exc:
+            log.error("claude fallo: %s", exc)
+            self.events.put(("error", str(exc)))
+        except Exception:
+            log.exception("fallo inesperado hablando con Claude")
+            traceback.print_exc()
+            self.events.put(("error", "Fallo inesperado; mira la consola."))
+
+    def _worker_memoria(self, session: Session, question: str, shot: Path) -> None:
+        """Pasados por resumen: la imagen actual y notas de texto de las demas.
+
+        Cada captura es una conversacion nueva, asi que el costo no crece con
+        la sesion. Si Claude pide ver una anterior (`NEED: 3`), se le re-envia
+        esa sola y responde ya con ella.
+        """
+        n = session.captures + 1
+        entries = list(session.memoria)  # copia: la lista vive en el hilo de Tk
+        comun = dict(
+            image_path=shot,
+            resume=False,
+            system_prompt=self.cfg.full_system_prompt(session.preprompt),
+            model=session.model,
+            effort=session.effort,
+        )
+        try:
+            reply = self.client.send(
+                session_id=new_session_id(),
+                question=memoria.build_prompt(entries, question, n),
+                **comun,
+            )
+            cost, ms = reply.cost_usd, reply.duration_ms
+            pedidas = [k for k in memoria.needs(reply.text, n)
+                       if session.shot_path(k).exists()]
+            if pedidas:
+                log.info("pide de vuelta las capturas %s", pedidas)
+                reply = self.client.send(
+                    session_id=new_session_id(),
+                    question=memoria.build_prompt(entries, question, n, fetched=pedidas),
+                    extra_images=[(f"Earlier screenshot #{k}:", session.shot_path(k))
+                                  for k in pedidas],
+                    **comun,
+                )
+                cost += reply.cost_usd
+                ms += reply.duration_ms
+            texto, memo = memoria.parse(reply.text)
+            reply = dataclasses.replace(reply, text=texto, cost_usd=cost, duration_ms=ms)
+            tuya = "" if question.startswith(DEFAULT_QUESTION) else question
+            entry = memoria.Entry(n=n, memo=memo, answer=texto, question=tuya)
+            log.info("respuesta en %dms, $%.3f (resumen, %d notas%s%s)", ms, cost,
+                     len(entries), f", +#{pedidas}" if pedidas else "",
+                     "" if memo else ", SIN memo")
+            self.events.put(("reply", (session.session_id, reply, False, entry)))
         except ClaudeError as exc:
             log.error("claude fallo: %s", exc)
             self.events.put(("error", str(exc)))
@@ -585,7 +649,8 @@ class App:
             pass
         self._drain_job = self.panel.after(POLL_MS, self._drain)
 
-    def _on_reply(self, session_id: str, reply) -> None:
+    def _on_reply(self, session_id: str, reply, in_history: bool = True,
+                  entry: memoria.Entry | None = None) -> None:
         self.busy = False
         self.panel.hide_busy()
 
@@ -598,7 +663,9 @@ class App:
         if destino is None:
             return
 
-        destino.record(reply.cost_usd)
+        destino.record(reply.cost_usd, in_history)
+        if entry is not None:
+            destino.memoria.append(entry)
         pie = (
             f"{reply.duration_ms / 1000:.1f}s · {reply.cost_label} · "
             f"{self.hotkey_hint}"
@@ -614,7 +681,8 @@ class App:
         self.panel.set_hint(pie)
 
         limit = self.cfg["warn_after_captures"]
-        if limit and destino.captures == limit:
+        # Con memoria por resumen el costo no crece: no hay nada que avisar.
+        if limit and destino.captures == limit and self.cfg["history_mode"] != "resumen":
             # Cada turno reenvia las capturas anteriores, asi que el costo por
             # pregunta sube segun crece la sesion.
             self.panel.flash(
