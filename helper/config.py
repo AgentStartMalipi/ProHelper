@@ -491,6 +491,9 @@ DEFAULTS: dict[str, Any] = {
     # Encoge el panel a solo el encabezado y lo vuelve a desplegar. Es lo mismo
     # que el boton "—", pero sin tener que buscarlo con el raton.
     "collapse_hotkey": "alt+e",
+    # Trae el panel al frente, desplegado, sin capturar: lo que hace Alt+3 con
+    # la ventana pero sin gastar una consulta.
+    "front_hotkey": "alt+f",
     # Sube y baja por las respuestas anteriores de la sesion con las flechas.
     # Al salir del modo el panel vuelve solo a la ultima respuesta.
     "scroll_hotkey": "alt+5",

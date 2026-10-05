@@ -1150,6 +1150,16 @@ def test_varias_sesiones() -> None:
           app.panel.answer.yview()[1] >= 0.999, str(app.panel.answer.yview()))
     app.end_session()
 
+    section("[atajos] traer al frente")
+    check("alt+f de serie", cfg["front_hotkey"] == "alt+f", cfg["front_hotkey"])
+    app.panel.update()
+    alto = app.panel.winfo_height()
+    app.panel.toggle_collapse(); app.panel.update()
+    app.events.put(("frente", None)); app._drain(); app.panel.update()
+    check("el atajo lo despliega si estaba encogido",
+          app.panel.winfo_height() >= alto - 4, str(app.panel.winfo_height()))
+    check("y lo deja encima", bool(app.panel.attributes("-topmost")))
+
     section("[atajos] encoger el panel")
     check("alt+e de serie", cfg["collapse_hotkey"] == "alt+e", cfg["collapse_hotkey"])
     app.panel.update()

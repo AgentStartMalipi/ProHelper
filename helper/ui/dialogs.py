@@ -401,6 +401,14 @@ class SettingsDialog(Modal):
             "cerrar la sesion ni perder la respuesta.",
         )
 
+        field_label(self.content, "Atajo para traer el panel al frente")
+        self.front_hotkey = entry(self.content, cfg["front_hotkey"])
+        hint_label(
+            self.content,
+            "Lo pone encima de las demas ventanas y lo despliega si estaba "
+            "encogido, sin hacer una captura.",
+        )
+
         field_label(self.content, "Atajo para releer respuestas")
         self.scroll_hotkey = entry(self.content, cfg["scroll_hotkey"])
         hint_label(
@@ -498,6 +506,7 @@ class SettingsDialog(Modal):
             "move_hotkey": self.move_hotkey.get().strip().lower(),
             "switch_hotkey": self.switch_hotkey.get().strip().lower(),
             "collapse_hotkey": self.collapse_hotkey.get().strip().lower(),
+            "front_hotkey": self.front_hotkey.get().strip().lower(),
             "scroll_hotkey": self.scroll_hotkey.get().strip().lower(),
             "language": self.language.get(),
             "model": self.model.get(),

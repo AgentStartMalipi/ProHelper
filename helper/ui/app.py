@@ -16,7 +16,11 @@ from pathlib import Path
 from .. import capture, lang, memoria, privacy
 from ..claude_client import ClaudeClient, ClaudeError, new_session_id
 from ..config import DEFAULT_QUESTION, Config
-from ..hotkey import HotkeyError, HotkeyListener, HotkeyManager
+from ..hotkey import (
+    HotkeyError,
+    HotkeyListener,
+    HotkeyManager,
+)
 from ..log import log
 from ..session import Session
 from . import theme
@@ -31,7 +35,8 @@ POLL_MS = 40
 
 # Cuanto mueve cada pulsacion de flecha, y a los cuantos segundos sin tocar
 # nada se apaga el modo mover solo. El apagado automatico no es un adorno:
-# mientras el modo esta activo las flechas no funcionan en el resto de Windows.
+# mientras el modo esta activo cada flecha hace dos cosas, la suya en la
+# ventana activa y la del helper.
 PASO_PX = 24
 MOVER_TIMEOUT_MS = 15_000
 
@@ -102,6 +107,9 @@ class App:
         colapsar = self.cfg["collapse_hotkey"]
         if colapsar:
             acciones[colapsar] = self._on_collapse
+        frente = self.cfg["front_hotkey"]
+        if frente:
+            acciones[frente] = self._on_front
         scroll = self.cfg["scroll_hotkey"]
         if scroll:
             acciones[scroll] = self._on_scroll
@@ -147,6 +155,10 @@ class App:
         log.info("atajo de colapsar recibido: %s", spec)
         self.events.put(("colapsar", None))
 
+    def _on_front(self, spec: str) -> None:
+        log.info("atajo de traer al frente recibido: %s", spec)
+        self.events.put(("frente", None))
+
     def _on_flecha(self, spec: str) -> None:
         self.events.put(("flecha", spec))
 
@@ -166,12 +178,13 @@ class App:
     # ------------------------------------------------- modos con las flechas
 
     def _tomar_flechas(self, teclas: tuple[str, ...]) -> bool:
-        """Registra esas flechas y Esc como atajos globales, o ninguna.
+        """Toma esas flechas y Esc con RegisterHotKey, o ninguna.
 
-        Se hace con atajos globales, no con foco: asi no le quita el teclado a
-        lo que estes haciendo. La contrapartida es que esas teclas dejan de
-        funcionar en el resto de Windows mientras dure, por eso hay que poder
-        apagarlo (mismo atajo, Esc) y un apagado automatico por si te olvidas.
+        No se usa polling (GetAsyncKeyState): algunos antivirus lo tratan como
+        un keylogger y le esconden el teclado fisico. Con RegisterHotKey el
+        helper se queda con la tecla: mientras dure el modo, las flechas no le
+        llegan a la ventana activa. Por eso hay que poder apagarlo (mismo
+        atajo, Esc) y un apagado automatico por si te olvidas.
         """
         for tecla in teclas:
             listener = HotkeyListener(
@@ -181,15 +194,28 @@ class App:
             try:
                 listener.start()
             except HotkeyError as exc:
-                # Si una flecha ya la tiene otra app, se deshace lo hecho y no
-                # se entra en un modo a medias.
+                # Falla si otra app ya tiene esa flecha registrada. Se deshace
+                # lo hecho y no se entra en un modo a medias.
                 log.warning("no pude tomar %s: %s", tecla, exc)
                 self._soltar_flechas()
                 return False
             self._flechas.append(listener)
 
+        # Alt+flecha hace lo mismo, para quien no suelta el Alt despues del
+        # atajo del modo. Es un extra: si otra app ya lo tiene, se sigue sin el.
+        for tecla in teclas:
+            alt = HotkeyListener(
+                f"alt+{tecla}", lambda s=tecla: self._on_flecha(s),
+                norepeat=False,
+            )
+            try:
+                alt.start()
+                self._flechas.append(alt)
+            except HotkeyError as exc:
+                log.warning("no pude tomar alt+%s: %s", tecla, exc)
+
         # Esc tambien apaga, ademas del atajo del modo.
-        esc = HotkeyListener("esc", lambda _s: self._on_salir_modo(), allow_bare=True)
+        esc = HotkeyListener("esc", lambda: self._on_salir_modo(), allow_bare=True)
         try:
             esc.start()
             self._flechas.append(esc)
@@ -203,7 +229,7 @@ class App:
         self._flechas.clear()
 
     def _stop_modo(self) -> None:
-        """Apaga el modo que este activo y devuelve las flechas a Windows."""
+        """Apaga el modo que este activo y deja de vigilar las flechas."""
         if self.modo is None:
             return
         anterior, self.modo = self.modo, None
@@ -635,6 +661,8 @@ class App:
                     self._toggle_switch_mode()
                 elif kind == "colapsar":
                     self.panel.toggle_collapse()
+                elif kind == "frente":
+                    self.panel.bring_to_front()
                 elif kind == "scroll":
                     self._toggle_scroll_mode()
                 elif kind == "salir_modo":
@@ -712,6 +740,7 @@ class App:
             or result.get("move_hotkey") != self.cfg["move_hotkey"]
             or result.get("switch_hotkey") != self.cfg["switch_hotkey"]
             or result.get("collapse_hotkey") != self.cfg["collapse_hotkey"]
+            or result.get("front_hotkey") != self.cfg["front_hotkey"]
             or result.get("scroll_hotkey") != self.cfg["scroll_hotkey"]
         )
         monitor_changed = (

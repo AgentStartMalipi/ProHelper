@@ -578,6 +578,19 @@ class HelperPanel(tk.Tk):
                 self.footer.pack(fill="x", side="bottom")
             self._fit()
 
+    def bring_to_front(self) -> None:
+        """Lo pone encima de todo y desplegado, sin quitarle el foco a nadie.
+
+        Ya es topmost, pero otra ventana topmost puede haber quedado encima:
+        apagarlo y encenderlo lo vuelve a subir al tope de esa capa.
+        """
+        self.deiconify()
+        self.attributes("-topmost", False)
+        self.attributes("-topmost", True)
+        self.lift()
+        if self._collapsed:
+            self.toggle_collapse()
+
     # ------------------------------------------------------------- posicion
 
     def _bounds(self, monitor_index: int | None = None) -> tuple[int, int, int, int]:

@@ -103,7 +103,7 @@ Mientras el modo está activo las flechas dejan de funcionar en el resto de
 Windows, así que se apaga solo tras 15 segundos sin tocar nada — por si te
 olvidas.
 
-El botón `—` (o `Alt+E` desde donde sea) colapsa el panel al encabezado; `⚙` abre la configuración.
+El botón `—` (o `Alt+E` desde donde sea) colapsa el panel al encabezado; `Alt+F` lo trae al frente y desplegado sin capturar; `⚙` abre la configuración.
 
 ### Varias sesiones a la vez
 
@@ -224,6 +224,8 @@ Vive en `%APPDATA%\helper\config.json` y se edita desde el botón `⚙`.
 - **Atajo para encoger el panel** — de serie `alt+e`. Deja solo el encabezado a
   la vista y lo vuelve a desplegar. No cierra la sesión ni pierde la respuesta:
   es el botón `—` sin buscarlo con el ratón.
+- **Atajo para traer el panel al frente** — de serie `alt+f`. Lo pone encima de
+  las demás ventanas y lo despliega si estaba encogido, sin hacer una captura.
 - **Atajo para releer respuestas** — de serie `alt+5`. Toma las flechas arriba y
   abajo para subir por el historial de la sesión. Al salir (mismo atajo, `Esc`,
   o solos a los 15 segundos) el panel vuelve a la última respuesta.
