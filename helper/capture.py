@@ -91,6 +91,17 @@ def _active_window_rect() -> dict[str, int]:
     return {"left": rect.left, "top": rect.top, "width": width, "height": height}
 
 
+def _monitor_del_cursor(sct: "mss.MSS") -> dict[str, int]:
+    x, y = _cursor_pos()
+    for mon in sct.monitors[1:]:
+        if (
+            mon["left"] <= x < mon["left"] + mon["width"]
+            and mon["top"] <= y < mon["top"] + mon["height"]
+        ):
+            return mon
+    return sct.monitors[1]  # cursor fuera de todo: cae al principal
+
+
 def _region(sct: "mss.MSS", mode: str, monitor_index: int) -> dict[str, int]:
     if mode == "all":
         return sct.monitors[0]
@@ -107,14 +118,8 @@ def _region(sct: "mss.MSS", mode: str, monitor_index: int) -> dict[str, int]:
         return sct.monitors[monitor_index]
 
     if mode == "active_monitor":
-        x, y = _cursor_pos()
-        for mon in sct.monitors[1:]:
-            if (
-                mon["left"] <= x < mon["left"] + mon["width"]
-                and mon["top"] <= y < mon["top"] + mon["height"]
-            ):
-                return mon
-        return sct.monitors[1]  # cursor fuera de todo: cae al principal
+        return _monitor_del_cursor(sct)
+
 
     raise CaptureError(f"modo de captura desconocido: {mode!r}")
 

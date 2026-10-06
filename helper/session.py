@@ -53,6 +53,9 @@ class Session:
     # los de la configuracion global.
     model: str | None = None
     effort: str | None = None
+    # Que IA responde en esta sesion ("claude" o "groq"). Se puede cambiar a
+    # mitad desde el menu del panel.
+    provider: str = "claude"
     session_id: str = field(default_factory=claude_client.new_session_id)
     started_at: float = field(default_factory=time.time)
     captures: int = 0
@@ -71,6 +74,10 @@ class Session:
     # Turnos enviados a la conversacion PRINCIPAL. No es `captures`: las sueltas
     # no la tocan, y al volver a marcar "Usar pasados" se sigue donde iba.
     history_turns: int = 0
+    # De esos, los que fueron a Claude. Solo Claude guarda la conversacion de
+    # su lado: si la sesion empezo con Groq, el primer turno con Claude tiene
+    # que abrirla, no reanudar una que no existe.
+    claude_turns: int = 0
     # Memoria por resumen (ver memoria.py): una nota por captura con pasados.
     # Solo se llena con history_mode "resumen"; en "imagenes" manda --resume.
     memoria: list[Entry] = field(default_factory=list)
@@ -92,8 +99,8 @@ class Session:
 
     @property
     def started(self) -> bool:
-        """True si la conversacion principal ya existe (toca --resume)."""
-        return self.history_turns > 0
+        """True si la conversacion principal ya existe en Claude (toca --resume)."""
+        return self.claude_turns > 0
 
     def conversation_for_next(self) -> tuple[str, bool]:
         """(id de conversacion, resume) para la proxima captura."""
@@ -101,12 +108,15 @@ class Session:
             return self.session_id, self.started
         return claude_client.new_session_id(), False
 
-    def record(self, cost_usd: float, in_history: bool = True) -> None:
+    def record(self, cost_usd: float, in_history: bool = True,
+               provider: str = "claude") -> None:
         """`in_history`: el turno fue a la conversacion principal (no suelto)."""
         self.captures += 1
         self.total_cost_usd += cost_usd
         if in_history:
             self.history_turns += 1
+            if provider == "claude":
+                self.claude_turns += 1
 
     def remember(
         self,

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import capture, dpi, log as logmod
 from .claude_client import ClaudeClient, ClaudeError
-from .config import Config
+from .config import Config, load_env
 from .session import Session
 
 
@@ -121,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    load_env()  # GROQ_API_KEY y demas claves del .env del proyecto
     cfg = Config.load()
 
     if args.monitors:

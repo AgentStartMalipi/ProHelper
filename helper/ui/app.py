@@ -13,9 +13,11 @@ import threading
 import traceback
 from pathlib import Path
 
-from .. import capture, lang, memoria, privacy
+from .. import capture, lang, memoria, privacy, solvers
 from ..claude_client import ClaudeClient, ClaudeError, new_session_id
-from ..config import DEFAULT_QUESTION, Config
+from ..config import DEFAULT_QUESTION, PROVIDERS, Config
+from ..codex_client import CodexClient
+from ..groq_client import GroqClient, GroqLimite
 from ..hotkey import (
     HotkeyError,
     HotkeyListener,
@@ -58,7 +60,12 @@ def _bonito(spec: str) -> str:
 class App:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self.client = ClaudeClient(cfg)
+        # Una IA por sesion; los dos clientes tienen la misma forma.
+        self.clients = {
+            "claude": ClaudeClient(cfg),
+            "groq": GroqClient(cfg),
+            "chatgpt": CodexClient(cfg),
+        }
         # Varias sesiones abiertas a la vez, una activa. Son conversaciones
         # independientes: cada una con su pre-prompt, su target y su costo.
         self.sessions: list[Session] = []
@@ -74,6 +81,7 @@ class App:
             on_ask=self.request_capture,
             on_edit_session=self.edit_session,
             on_capture=self.request_capture,
+            on_provider=self.switch_provider,
         )
         self.panel.on_history_toggle = self._history_toggled
         self.panel.place_at(
@@ -399,19 +407,26 @@ class App:
             monitor_index=result["monitor_index"],
             model=result.get("model"),
             effort=result.get("effort"),
+            provider=result["provider"],
         )
         self.sessions.append(sesion)
         self.indice = len(self.sessions) - 1
+        log.info("sesion nueva %r con %s", sesion.label, sesion.provider)
 
         self.cfg["capture"] = {
             "mode": result["mode"],
             "monitor_index": result["monitor_index"],
         }
+        # La ultima IA elegida queda como la de la proxima sesion.
+        self.cfg["provider"] = result["provider"]
+        if result.get("groq_api_key"):
+            self.cfg["groq_api_key"] = result["groq_api_key"]
         self.cfg.save()
 
         salto = chr(10) + chr(10)
-        aviso = "Sesion lista. Captura cuando quieras."
-        if sesion.model:
+        aviso = (f"Sesion lista con {PROVIDERS[sesion.provider]}. "
+                 f"Captura cuando quieras.")
+        if sesion.model and sesion.provider == "claude":
             aviso += f"{salto}Modelo de esta sesion: {sesion.model}."
         if len(self.sessions) > 1:
             aviso += f"{salto}{self._pista_cambio()}"
@@ -442,10 +457,38 @@ class App:
         self.panel.show_session(self._status(), sesion.last_hint or self.hotkey_hint)
         self.panel.set_historial(sesion.historial)
         self.panel.set_use_history(sesion.use_history)
+        self.panel.set_provider(sesion.provider)
 
     def _history_toggled(self, value: bool) -> None:
         if self.session is not None:
             self.session.use_history = value
+
+    def switch_provider(self, provider: str) -> None:
+        """Cambia la IA de la sesion activa sin cerrarla (menu del panel).
+
+        Las notas de "Usar pasados" en modo resumen son texto, asi que la otra
+        IA las recibe igual. En modo imagenes cada una lleva su conversacion.
+        """
+        if provider not in PROVIDERS:
+            return
+        sesion = self.session
+        if sesion is None:
+            self.panel.flash("Abre una sesion primero", theme.WARN)
+            self.panel.set_provider(self.cfg["provider"])
+            return
+        if self.busy:
+            self.panel.flash("Espera a que termine la consulta", theme.WARN)
+            self.panel.set_provider(sesion.provider)
+            return
+        if provider == sesion.provider:
+            return
+        sesion.provider = provider
+        self.cfg["provider"] = provider
+        self.cfg.save()
+        log.info("sesion %s pasa a %s", sesion.label, provider)
+        self.panel.set_provider(provider)
+        self.panel.set_status(self._status())
+        self.panel.flash(f"Ahora responde {PROVIDERS[provider]}", theme.OK)
 
     def edit_session(self) -> None:
         """Cambia que se captura. El pre-prompt de la sesion no se toca.
@@ -492,7 +535,8 @@ class App:
         label = capture.MODE_LABELS[self.session.capture_mode]
         if self.session.capture_mode == "monitor":
             label = f"Monitor {self.session.monitor_index}"
-        base = f"{self.session.label} · {label} · {self.session.status_label}"
+        ia = PROVIDERS[self.session.provider].split(" ")[0]
+        base = f"{self.session.label} · {ia} · {label} · {self.session.status_label}"
         if len(self.sessions) > 1:
             # Con varias abiertas hay que ver de un vistazo en cual estas.
             return f"[{self.indice + 1}/{len(self.sessions)}] {base}"
@@ -559,7 +603,11 @@ class App:
 
         self.panel.deiconify()
         self.panel.attributes("-topmost", True)
-        self.panel.show_busy("preguntando a Claude…")
+        ia = PROVIDERS[self.session.provider].split(" ")[0]
+        espera = self._groq_en_pausa(self.session)
+        if espera:
+            ia = f"Claude (Groq vuelve en {espera}s)"
+        self.panel.show_busy(f"preguntando a {ia}…")
 
         threading.Thread(
             target=self._worker,
@@ -568,14 +616,65 @@ class App:
             daemon=True,
         ).start()
 
+    # ---------------------------------------------------- relevo de Groq
+
+    def _groq_en_pausa(self, session: Session) -> int:
+        """Segundos que faltan para que Groq tenga cupo, si toca relevo.
+
+        0 si la sesion no es de Groq, si no hay relevo configurado o si Groq
+        ya tiene cupo: en esos casos responde la IA de la sesion.
+        """
+        if session.provider != "groq" or not self.cfg["groq_fallback_model"]:
+            return 0
+        restante = self.clients["groq"].pausa_restante
+        return int(restante + 0.999) if restante > 0 else 0
+
+    def _enviar(self, session: Session, relevo: list[bool], **kwargs):
+        """Manda con la IA de la sesion; con Groq sin cupo, con Claude.
+
+        Solo para sesiones de Groq: si su cupo por minuto esta agotado (o se
+        agota en esta misma llamada), la captura va al Claude rapido y Groq
+        vuelve solo en cuanto se recupera. `relevo[0]` queda en True si
+        respondio Claude.
+        """
+        if session.provider == "groq" and self.cfg["groq_fallback_model"]:
+            relevo_modelo = self.cfg["groq_fallback_model"]
+            espera = self._groq_en_pausa(session)
+            if espera:
+                log.info("relevo: groq en pausa %ds -> responde %s", espera, relevo_modelo)
+                relevo[0] = True
+            else:
+                try:
+                    reply = self.clients["groq"].send(**kwargs)
+                    if solvers.number_box_sin_linea(reply.text):
+                        motivo = "respondio un Number Box sin la linea NUMBER BOX"
+                    elif solvers.number_box_mal_leido(reply.text):
+                        motivo = "leyo numeros sin solucion (casi seguro uno mal leido)"
+                    else:
+                        return reply
+                    log.info("relevo: groq %s -> la misma captura va a %s: %r",
+                             motivo, relevo_modelo, reply.text[:80])
+                    relevo[0] = True
+                except GroqLimite as exc:
+                    log.info("relevo: groq rechazo por limite -> la misma captura "
+                             "va a %s (groq vuelve en %.0fs)", relevo_modelo, exc.segundos)
+                    relevo[0] = True
+        if relevo[0]:
+            # Sin la plantilla: su modelo esta pensado para la IA de la sesion.
+            kwargs.update(model=self.cfg["groq_fallback_model"], effort=None)
+            return self.clients["claude"].send(**kwargs)
+        return self.clients[session.provider].send(**kwargs)
+
     def _worker(self, session: Session, question: str, shot: Path) -> None:
         """Corre fuera del hilo de Tk: solo publica en la cola."""
         if session.use_history and self.cfg["history_mode"] == "resumen":
             self._worker_memoria(session, question, shot)
             return
+        relevo = [False]
         conv_id, resume = session.conversation_for_next()
         try:
-            reply = self.client.send(
+            reply = self._enviar(
+                session, relevo,
                 session_id=conv_id,
                 question=question,
                 image_path=shot,
@@ -584,11 +683,19 @@ class App:
                 model=session.model,    # la plantilla puede pedir uno mas rapido
                 effort=session.effort,
             )
-            log.info("respuesta en %dms, $%.3f (%s)", reply.duration_ms, reply.cost_usd,
+            log.info("respuesta de %s (%s%s) en %dms, $%.3f (%s)",
+                     "claude" if relevo[0] else session.provider, reply.model,
+                     ", relevo de groq" if relevo[0] else "",
+                     reply.duration_ms, reply.cost_usd,
                      "con pasados" if conv_id == session.session_id else "suelta")
-            self.events.put(("reply", (session.session_id, reply, conv_id == session.session_id)))
+            # Number Box y similares: el modelo lee, Python calcula.
+            reply = dataclasses.replace(reply, text=solvers.aplicar(reply.text))
+            usado = "claude" if relevo[0] else session.provider
+            self.events.put(("reply", (session.session_id, reply,
+                                       conv_id == session.session_id, None, usado,
+                                       relevo[0])))
         except ClaudeError as exc:
-            log.error("claude fallo: %s", exc)
+            log.error("%s fallo: %s", session.provider, exc)
             self.events.put(("error", str(exc)))
         except Exception:
             log.exception("fallo inesperado hablando con Claude")
@@ -602,6 +709,7 @@ class App:
         la sesion. Si Claude pide ver una anterior (`NEED: 3`), se le re-envia
         esa sola y responde ya con ella.
         """
+        relevo = [False]
         n = session.captures + 1
         entries = list(session.memoria)  # copia: la lista vive en el hilo de Tk
         comun = dict(
@@ -612,7 +720,8 @@ class App:
             effort=session.effort,
         )
         try:
-            reply = self.client.send(
+            reply = self._enviar(
+                session, relevo,
                 session_id=new_session_id(),
                 question=memoria.build_prompt(entries, question, n),
                 **comun,
@@ -622,7 +731,8 @@ class App:
                        if session.shot_path(k).exists()]
             if pedidas:
                 log.info("pide de vuelta las capturas %s", pedidas)
-                reply = self.client.send(
+                reply = self._enviar(
+                    session, relevo,
                     session_id=new_session_id(),
                     question=memoria.build_prompt(entries, question, n, fetched=pedidas),
                     extra_images=[(f"Earlier screenshot #{k}:", session.shot_path(k))
@@ -632,15 +742,21 @@ class App:
                 cost += reply.cost_usd
                 ms += reply.duration_ms
             texto, memo = memoria.parse(reply.text)
+            # Number Box y similares: el modelo lee, Python calcula.
+            texto = solvers.aplicar(texto)
             reply = dataclasses.replace(reply, text=texto, cost_usd=cost, duration_ms=ms)
             tuya = "" if question.startswith(DEFAULT_QUESTION) else question
             entry = memoria.Entry(n=n, memo=memo, answer=texto, question=tuya)
-            log.info("respuesta en %dms, $%.3f (resumen, %d notas%s%s)", ms, cost,
+            log.info("respuesta de %s (%s%s) en %dms, $%.3f (resumen, %d notas%s%s)",
+                     "claude" if relevo[0] else session.provider, reply.model,
+                     ", relevo de groq" if relevo[0] else "", ms, cost,
                      len(entries), f", +#{pedidas}" if pedidas else "",
                      "" if memo else ", SIN memo")
-            self.events.put(("reply", (session.session_id, reply, False, entry)))
+            usado = "claude" if relevo[0] else session.provider
+            self.events.put(("reply", (session.session_id, reply, False, entry, usado,
+                                       relevo[0])))
         except ClaudeError as exc:
-            log.error("claude fallo: %s", exc)
+            log.error("%s fallo: %s", session.provider, exc)
             self.events.put(("error", str(exc)))
         except Exception:
             log.exception("fallo inesperado hablando con Claude")
@@ -678,7 +794,8 @@ class App:
         self._drain_job = self.panel.after(POLL_MS, self._drain)
 
     def _on_reply(self, session_id: str, reply, in_history: bool = True,
-                  entry: memoria.Entry | None = None) -> None:
+                  entry: memoria.Entry | None = None,
+                  provider: str = "claude", relevo: bool = False) -> None:
         self.busy = False
         self.panel.hide_busy()
 
@@ -691,18 +808,33 @@ class App:
         if destino is None:
             return
 
-        destino.record(reply.cost_usd, in_history)
+        destino.record(reply.cost_usd, in_history, provider)
         if entry is not None:
             destino.memoria.append(entry)
+        # Quien respondio va primero: con varias IA y el relevo de Groq ya no
+        # es siempre la misma.
+        modelo = reply.model.split("/")[-1] if reply.model else ""
         pie = (
+            f"{modelo + ' · ' if modelo else ''}"
             f"{reply.duration_ms / 1000:.1f}s · {reply.cost_label} · "
             f"{self.hotkey_hint}"
         )
+        if relevo:
+            # Que se vea quien respondio: no es la IA que elegiste.
+            espera = self._groq_en_pausa(destino)
+            if espera >= 120:
+                vuelve = f"Groq vuelve en ~{espera // 60} min"
+            else:
+                vuelve = f"Groq vuelve en {espera}s" if espera else "Groq ya tiene cupo"
+            pie = f"Respondio Claude · {vuelve} · {pie}"
         destino.remember(reply.text, None, pie)
 
         if destino is not self.session:
             self.panel.flash("Respuesta lista en otra sesion", theme.OK, ms=3000)
             return
+
+        if relevo:
+            self.panel.flash("Groq sin cupo: respondio Claude", theme.WARN, ms=3000)
 
         self.panel.add_answer(reply.text)
         self.panel.set_status(self._status())

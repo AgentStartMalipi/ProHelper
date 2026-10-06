@@ -8,6 +8,7 @@ import tkinter.font as tkfont
 from typing import Callable
 
 from .. import capture, dpi
+from ..config import PROVIDERS
 from . import theme
 from .widgets import FlatButton, PrimaryButton, Spinner, make_draggable, separator
 
@@ -48,6 +49,7 @@ class HelperPanel(tk.Tk):
         on_ask: Callable[[str], None],
         on_edit_session: Callable[[], None],
         on_capture: Callable[[], None],
+        on_provider: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__()
 
@@ -62,6 +64,7 @@ class HelperPanel(tk.Tk):
         self._on_ask = on_ask
         self._on_edit_session = on_edit_session
         self._on_capture = on_capture
+        self._on_provider = on_provider
 
         self.title("helper")
         self.overrideredirect(True)  # sin barra de titulo de Windows
@@ -79,6 +82,7 @@ class HelperPanel(tk.Tk):
         separator(outer).pack(fill="x")
         self._build_body(outer)
         self._build_footer(outer)
+        self._build_menu()
 
         self._flash_job: str | None = None
         self._entradas: list[tuple[str, str | None]] = []
@@ -250,7 +254,7 @@ class HelperPanel(tk.Tk):
         self.use_history = tk.BooleanVar(value=True)
         self.history_check = tk.Checkbutton(
             self.footer,
-            text="Usar pasados (Claude ve las capturas anteriores)",
+            text="Usar pasados (la IA ve las capturas anteriores)",
             variable=self.use_history,
             command=self._history_changed,
             bg=theme.BG,
@@ -274,6 +278,41 @@ class HelperPanel(tk.Tk):
             anchor="w",
         )
         self.hint.pack(fill="x", padx=theme.PAD, pady=(0, 8))
+
+    # ------------------------------------------------------ menu contextual
+
+    def _build_menu(self) -> None:
+        """Clic derecho en el panel: cambiar de IA sin cerrar la sesion."""
+        self.provider = tk.StringVar(value="claude")
+        self.menu = tk.Menu(
+            self, tearoff=0, bg=theme.BG_INPUT, fg=theme.FG,
+            activebackground=theme.BG_HOVER, activeforeground=theme.FG,
+            font=theme.FONT_SMALL, bd=0,
+        )
+        self.menu.add_command(label="Modelo de IA", state="disabled")
+        for key, etiqueta in PROVIDERS.items():
+            self.menu.add_radiobutton(
+                label=etiqueta, value=key, variable=self.provider,
+                command=lambda k=key: self._provider_elegido(k),
+            )
+        self.bind_all("<Button-3>", self._popup_menu)
+
+    def _popup_menu(self, event) -> None:
+        # bind_all tambien recibe los clics de los dialogos: solo el panel.
+        if event.widget.winfo_toplevel() is not self:
+            return
+        try:
+            self.menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.menu.grab_release()
+
+    def _provider_elegido(self, key: str) -> None:
+        if self._on_provider is not None:
+            self._on_provider(key)
+
+    def set_provider(self, key: str) -> None:
+        """Marca en el menu la IA de la sesion que se esta viendo."""
+        self.provider.set(key)
 
     def _history_changed(self) -> None:
         if self.on_history_toggle is not None:

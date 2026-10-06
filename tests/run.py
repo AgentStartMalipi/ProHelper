@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import re
 import pathlib
 import sys
 import tempfile
@@ -1232,6 +1233,479 @@ def test_varias_sesiones() -> None:
     app.run()
 
 
+# --------------------------------------------------------------------- groq
+
+
+def test_groq() -> None:
+    """Groq como segunda IA: cliente, sesion, dialogo y menu. Sin red."""
+    import os
+    import urllib.request
+
+    from helper import groq_client
+    from helper.claude_client import ClaudeError, Reply
+    from helper.config import DEFAULTS, Config
+    from helper.session import Session
+    from helper.ui import dialogs
+    from helper.ui.app import App
+
+    section("[groq] configuracion")
+    check("Claude sigue siendo el de serie", DEFAULTS["provider"] == "claude")
+    check("modelo de Groq de serie ve imagenes", DEFAULTS["groq_model"] == "qwen/qwen3.8-27b")
+    check("un proveedor desconocido vuelve a Claude",
+          Config({"provider": "otro"})["provider"] == "claude")
+    check("recuerda la ultima eleccion", Config({"provider": "groq"})["provider"] == "groq")
+
+    enviados: list[dict] = []
+
+    class _Resp:
+        headers: dict = {}  # sin cabeceras de cupo: no hay nada que pausar
+
+        def __init__(self, texto: str) -> None:
+            self._b = json.dumps(
+                {"choices": [{"message": {"content": texto}}]}).encode("utf-8")
+
+        def read(self) -> bytes:
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a) -> None:
+            return None
+
+    def falso_urlopen(req, timeout=0):
+        enviados.append({"auth": req.get_header("Authorization"),
+                         "body": json.loads(req.data.decode("utf-8"))})
+        return _Resp(f"respuesta {len(enviados)}")
+
+    original = urllib.request.urlopen
+    urllib.request.urlopen = falso_urlopen
+    shot = pathlib.Path(tempfile.mkdtemp()) / "s.png"
+    shot.write_bytes(b"PNG fake")
+    try:
+        section("[groq] cliente")
+        sin_key = groq_client.GroqClient(Config({"groq_api_key": ""}))
+        guardada = os.environ.pop("GROQ_API_KEY", None)
+        try:
+            sin_key.send("c1", "hola")
+            check("sin API key avisa", False)
+        except ClaudeError as exc:
+            check("sin API key avisa", "API key" in str(exc), str(exc))
+        if guardada is not None:
+            os.environ["GROQ_API_KEY"] = guardada
+
+        # Un modelo de solo texto, para cubrir el desvio de las capturas.
+        cli = groq_client.GroqClient(
+            Config({"groq_api_key": "gsk_x", "groq_model": "openai/gpt-oss-20b"}))
+        r = cli.send("c1", "solo texto", system_prompt="SP")
+        body = enviados[-1]["body"]
+        check("devuelve un Reply", isinstance(r, Reply) and r.text == "respuesta 1")
+        check("manda la key", enviados[-1]["auth"] == "Bearer gsk_x")
+        check("texto va al modelo elegido", body["model"] == "openai/gpt-oss-20b")
+        check("system prompt primero", body["messages"][0] == {"role": "system", "content": "SP"})
+
+        cli.send("c1", "con captura", image_path=shot, system_prompt="SP")
+        body = enviados[-1]["body"]
+        check("la captura va al modelo de vision", body["model"] == "qwen/qwen3.8-27b",
+              body["model"])
+        partes = body["messages"][-1]["content"]
+        check("la imagen viaja como data URL",
+              any(p["type"] == "image_url" and p["image_url"]["url"].startswith(
+                  "data:image/png;base64,") for p in partes))
+        check("recuerda el turno anterior de la conversacion",
+              any(m.get("content") == "respuesta 1" for m in body["messages"]))
+
+        cli.send("c1", "otra", image_path=shot)
+        body = enviados[-1]["body"]
+        imagenes = sum(1 for m in body["messages"] if isinstance(m["content"], list)
+                       for p in m["content"] if p["type"] == "image_url")
+        check("las capturas viejas no se re-envian", imagenes == 1, str(imagenes))
+
+        cli.send("c2", "suelta")
+        body = enviados[-1]["body"]
+        check("otra conversacion empieza limpia", len(body["messages"]) == 1)
+
+        sin_vision = groq_client.GroqClient(
+            Config({"groq_api_key": "k", "groq_model": "openai/gpt-oss-20b",
+                    "groq_vision_model": ""}))
+        sin_vision.send("c3", "pregunta", image_path=shot)
+        body = enviados[-1]["body"]
+        check("sin modelo de vision manda solo texto",
+              body["model"] == "openai/gpt-oss-20b"
+              and isinstance(body["messages"][-1]["content"], list)
+              and all(p["type"] == "text" for p in body["messages"][-1]["content"]))
+    finally:
+        urllib.request.urlopen = original
+
+    section("[groq] sesion")
+    s = Session()
+    s.record(0.0, provider="groq")
+    check("un turno de Groq no hace reanudar a Claude", not s.started)
+    s.record(0.01, provider="claude")
+    check("uno de Claude si", s.started)
+    s.close()
+
+    section("[groq] selector al abrir sesion y menu")
+    cfg = Config({"provider": "groq", "groq_api_key": ""})
+    cfg.save = lambda: None  # type: ignore[method-assign]
+    app = App(cfg)
+    guardada = os.environ.pop("GROQ_API_KEY", None)
+    dlg = dialogs.SessionDialog(app.panel, cfg)
+    check("arranca en la ultima IA elegida", dlg.provider.get() == "groq")
+    app.panel.update()
+    check("pide la key si falta", dlg.key_box.winfo_manager() == "pack")
+    dlg._accept()
+    check("no abre Groq sin key", dlg.result is None and dlg.winfo_exists())
+    dlg.groq_key.insert(0, "gsk_nueva")
+    dlg._accept()
+    check("devuelve IA y key", dlg.result and dlg.result["provider"] == "groq"
+          and dlg.result["groq_api_key"] == "gsk_nueva", str(dlg.result))
+    if guardada is not None:
+        os.environ["GROQ_API_KEY"] = guardada
+
+    dlg = dialogs.SessionDialog(app.panel, cfg)
+    dlg.provider.set("claude")
+    app.panel.update()
+    check("con Claude no pide key", dlg.key_box.winfo_manager() == "")
+    dlg.destroy()
+
+    app.session = Session(preprompt="x", provider="claude")
+    app._mostrar_sesion_activa()
+    check("el menu marca la IA de la sesion", app.panel.provider.get() == "claude")
+    app.switch_provider("groq")
+    check("el menu cambia la IA de la sesion", app.session.provider == "groq")
+    check("y queda como ultima eleccion", cfg["provider"] == "groq")
+    check("el estado dice que IA responde", "Groq" in app._status(), app._status())
+    app.busy = True
+    app.switch_provider("claude")
+    check("no cambia con una consulta en vuelo", app.session.provider == "groq")
+    app.busy = False
+
+    app.panel.after(50, app.quit)
+    app.run()
+
+
+# ------------------------------------------------------------------ chatgpt
+
+
+def test_chatgpt() -> None:
+    """ChatGPT por el CLI de Codex: argumentos, stream y errores. Sin red."""
+    import io
+    import subprocess as sp
+
+    from helper import codex_client
+    from helper.claude_client import ClaudeError
+    from helper.config import PROVIDERS, Config
+
+    section("[chatgpt] configuracion")
+    check("esta en el selector", "chatgpt" in PROVIDERS)
+    check("modelo de serie", Config()["codex_model"] == "gpt-6-luna")
+
+    llamadas: list[dict] = []
+
+    class _Proc:
+        """Imita a `codex exec --json`: escribe eventos JSONL por stdout."""
+
+        def __init__(self, eventos: list[dict]) -> None:
+            self.stdin = io.StringIO()
+            self.stdout = io.StringIO(
+                "".join(json.dumps(e) + chr(10) for e in eventos))
+            self.pid = 0
+            self.returncode = 0
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+    respuesta = [
+        {"type": "thread.started"},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "B) dropna"}},
+        {"type": "turn.completed", "usage": {"input_tokens": 1}},
+    ]
+    eventos = {"lista": respuesta}
+
+    def falso_popen(args, **kw):
+        proc = _Proc(eventos["lista"])
+        llamadas.append({"args": args, "proc": proc})
+        return proc
+
+    original_popen, original_which = sp.Popen, codex_client.shutil.which
+    codex_client.subprocess.Popen = falso_popen
+    codex_client.shutil.which = lambda _: "codex"
+    shot = pathlib.Path(tempfile.mkdtemp()) / "s.png"
+    shot.write_bytes(b"PNG fake")
+    try:
+        section("[chatgpt] cliente")
+        cli = codex_client.CodexClient(Config())
+        r = cli.send("c1", "pregunta", image_path=shot, system_prompt="SP")
+        args = llamadas[-1]["args"]
+        check("saca la respuesta del stream", r.text == "B) dropna", r.text)
+        check("va con el modelo de la config", args[args.index("-m") + 1] == "gpt-6-luna")
+        check("adjunta la captura", args[args.index("-i") + 1] == str(shot))
+        check("solo lectura y sin shell",
+              "read-only" in args and "features.shell_tool=false" in args)
+        check("reemplaza las instrucciones de agente",
+              any(a.startswith("model_instructions_file=") for a in args))
+        check("el prompt va por stdin", args[-1] == "-")
+
+        cli.send("c1", "otra")
+        check("recuerda el turno anterior", cli._historial["c1"][0] == ("pregunta", "B) dropna"))
+        cli.send("c2", "suelta")
+        check("otra conversacion empieza limpia", len(cli._historial["c2"]) == 1)
+
+        eventos["lista"] = [
+            {"type": "error", "message": json.dumps({"error": {
+                "message": "The 'x' model is not supported when using Codex with a ChatGPT account."}})},
+            {"type": "turn.failed", "error": {}},
+        ]
+        try:
+            cli.send("c3", "q")
+            check("un modelo no permitido avisa", False)
+        except ClaudeError as exc:
+            check("un modelo no permitido avisa", "not supported" in str(exc), str(exc))
+    finally:
+        codex_client.subprocess.Popen = original_popen
+        codex_client.shutil.which = original_which
+
+
+# ------------------------------------------------------------ relevo groq
+
+
+def test_relevo_groq() -> None:
+    """Groq sin cupo: responde Claude rapido y Groq vuelve solo."""
+    import email.message
+    import time as _time
+    import urllib.error
+    import urllib.request
+
+    from helper import groq_client
+    from helper.claude_client import Reply
+    from helper.config import Config
+    from helper.session import Session
+    from helper.ui.app import App
+
+    section("[relevo] Groq aprende cuanto cupo le queda")
+    respuestas: list = []
+
+    class _Resp:
+        def __init__(self, quedan: str, reset: str) -> None:
+            self.headers = email.message.Message()
+            self.headers["x-ratelimit-limit-tokens"] = "8000"
+            self.headers["x-ratelimit-remaining-tokens"] = quedan
+            self.headers["x-ratelimit-reset-tokens"] = reset
+
+        def read(self) -> bytes:
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a) -> None:
+            return None
+
+    def falso_urlopen(req, timeout=0):
+        r = respuestas.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    original = urllib.request.urlopen
+    urllib.request.urlopen = falso_urlopen
+    try:
+        g = groq_client.GroqClient(Config({"groq_api_key": "k"}))
+        respuestas.append(_Resp("7000", "2s"))
+        g.send("a", "q")
+        check("con cupo de sobra no pausa", g.pausa_restante == 0)
+        # Faltan 6500 para llenarlo en 48.75s; para una captura (2800)
+        # bastan 1300: 48.75 * 1300 / 6500 = 9.75s.
+        respuestas.append(_Resp("1500", "48.75s"))
+        g.send("a", "q")
+        check("si no da para otra captura, pausa solo lo que falta para una",
+              8.5 < g.pausa_restante <= 9.75, f"{g.pausa_restante:.1f}")
+
+        g2 = groq_client.GroqClient(Config({"groq_api_key": "k"}))
+        h = email.message.Message()
+        h["retry-after"] = "20"
+        respuestas.append(urllib.error.HTTPError("u", 429, "Too Many", h, None))
+        try:
+            g2.send("a", "q")
+            check("un 429 avisa como limite", False)
+        except groq_client.GroqLimite as exc:
+            check("un 429 avisa como limite", exc.segundos == 20)
+        check("y deja a Groq en pausa", 19 < g2.pausa_restante <= 20)
+    finally:
+        urllib.request.urlopen = original
+
+    section("[relevo] la app reparte la captura")
+    cfg = Config({"provider": "groq"})
+    cfg.save = lambda: None  # type: ignore[method-assign]
+    app = App(cfg)
+    usados: list[tuple[str, str | None]] = []
+
+    class _Falso:
+        def __init__(self, nombre: str, falla: bool = False) -> None:
+            self.nombre, self.falla = nombre, falla
+            self.pausa_hasta = 0.0
+            self.texto: str | None = None
+
+        @property
+        def pausa_restante(self) -> float:
+            return max(0.0, self.pausa_hasta - _time.time())
+
+        def send(self, **kw):
+            usados.append((self.nombre, kw.get("model")))
+            if self.falla:
+                self.pausa_hasta = _time.time() + 30
+                raise groq_client.GroqLimite("sin cupo", 30)
+            return Reply(self.texto or self.nombre, 0.0, 10, kw["session_id"])
+
+    groq, claude = _Falso("groq"), _Falso("claude")
+    app.clients.update(groq=groq, claude=claude)
+    sesion = Session(preprompt="x", provider="groq")
+
+    relevo = [False]
+    r = app._enviar(sesion, relevo, session_id="s", question="q")
+    check("con cupo responde Groq", r.text == "groq" and relevo == [False])
+
+    groq.falla = True
+    relevo = [False]
+    r = app._enviar(sesion, relevo, session_id="s", question="q")
+    check("si Groq se queda sin cupo, la misma captura va a Claude",
+          r.text == "claude" and relevo == [True])
+    check("con el Claude rapido", usados[-1] == ("claude", "claude-sonnet-5-5"),
+          str(usados[-1]))
+
+    antes = len(usados)
+    relevo = [False]
+    app._enviar(sesion, relevo, session_id="s", question="q")
+    check("mientras dura la pausa ni se intenta Groq",
+          [u[0] for u in usados[antes:]] == ["claude"], str(usados[antes:]))
+
+    groq.falla, groq.pausa_hasta = False, 0.0
+    relevo = [False]
+    r = app._enviar(sesion, relevo, session_id="s", question="q")
+    check("al reiniciarse el cupo vuelve a Groq", r.text == "groq" and relevo == [False])
+
+    groq.texto = "[Number Box: 10 - 6 × 1 -> 6]"
+    relevo = [False]
+    r = app._enviar(sesion, relevo, session_id="s", question="q")
+    check("Number Box sin la linea: lo repite Claude", r.text == "claude" and relevo == [True])
+    groq.texto = "NUMBER BOX: 1 2 1 19 -> 28"
+    relevo = [False]
+    r = app._enviar(sesion, relevo, session_id="s", question="q")
+    check("numeros sin solucion: lo repite Claude", r.text == "claude" and relevo == [True])
+    groq.texto = None
+
+    groq.pausa_hasta = _time.time() + 30
+    otra = Session(preprompt="x", provider="claude")
+    relevo = [False]
+    r = app._enviar(otra, relevo, session_id="s", question="q")
+    check("solo aplica a sesiones de Groq", r.text == "claude" and relevo == [False])
+
+    cfg["groq_fallback_model"] = ""
+    groq.falla, groq.pausa_hasta = True, 0.0
+    try:
+        app._enviar(sesion, [False], session_id="s", question="q")
+        check("sin relevo configurado sale el aviso", False)
+    except groq_client.GroqLimite:
+        check("sin relevo configurado sale el aviso", True)
+    cfg["groq_fallback_model"] = "claude-sonnet-5-5"
+
+    section("[relevo] el panel dice quien respondio")
+    app.session = sesion
+    app._mostrar_sesion_activa()
+    groq.pausa_hasta = _time.time() + 25
+    app._on_reply(sesion.session_id, Reply("respuesta", 0.01, 3000, "x"),
+                  False, None, "claude", True)
+    pie = app.panel.hint.cget("text")
+    check("el pie avisa del relevo", "Respondio Claude" in pie and "Groq vuelve" in pie, pie)
+    check("cuenta como turno de Claude", sesion.captures == 1)
+
+    app.panel.after(50, app.quit)
+    app.run()
+
+
+# ---------------------------------------------------------------- solvers
+
+
+def test_solvers() -> None:
+    """Number Box: el modelo lee los numeros, Python encuentra la cuenta."""
+    from fractions import Fraction
+
+    from helper.config import JUEGOS_COGNITIVOS
+    from helper.solvers import aplicar, resolver
+
+    def plano(texto) -> str:
+        """La consola de Windows no imprime x / - tipograficos."""
+        return str(texto).encode("ascii", "replace").decode()
+
+    section("[number box] los pasos se pueden jugar ficha a ficha")
+    from fractions import Fraction as F
+
+    def jugable(nums, obj, pasos) -> bool:
+        """Rejuega: cada paso usa dos fichas que hay y deja su resultado."""
+        fichas = [F(n) for n in nums]
+        ops = {"+": lambda a, b: a + b, "−": lambda a, b: a - b,
+               "×": lambda a, b: a * b, "÷": lambda a, b: a / b}
+        for a, op, b, r in pasos:
+            if a not in fichas:
+                return False
+            fichas.remove(a)
+            if b not in fichas:
+                return False
+            fichas.remove(b)
+            if ops[op](a, b) != r:
+                return False
+            fichas.append(r)
+        return fichas == [F(obj)]
+
+    casos = [([4, 6, 9, 7], 23), ([3, 8, 2, 5], 24), ([3, 3, 8, 8], 24),
+             ([1, 5, 5, 5], 24), ([2, 3], 6), ([6, 10, 1, 10], 6),
+             ([3, 4, 11, 3], 4), ([8, 1, 12, 10], 15), ([1, 2, 1, 10], 20)]
+    for nums, obj in casos:
+        pasos = resolver([F(n) for n in nums], F(obj))
+        check(f"{nums} -> {obj}", pasos is not None and jugable(nums, obj, pasos),
+              plano(pasos and [(str(a), op, str(b), str(r)) for a, op, b, r in pasos]))
+
+    pasos = resolver([F(n) for n in (6, 10, 1, 10)], F(6))
+    check("prefiere pasos enteros y no negativos",
+          all(r >= 0 and r.denominator == 1 for *_, r in pasos))
+    salida = aplicar("NUMBER BOX: 6 10 1 10 -> 6")
+    check("se muestra paso a paso", salida.count(" = ") == 3 and "→" in salida, plano(salida))
+
+    section("[number box] la linea del modelo se cambia por la solucion")
+    check("con corchetes y comas",
+          aplicar("[NUMBER BOX: 4, 6, 9, 7 -> 23]").startswith("[Number Box: ")
+          and aplicar("[NUMBER BOX: 4, 6, 9, 7 -> 23]").endswith("= 23]"),
+          plano(aplicar("[NUMBER BOX: 4, 6, 9, 7 -> 23]")))
+    sin = aplicar("NUMBER BOX: 1 1 1 1 -> 24")
+    check("sin solucion dice que numeros leyo", "1 1 1 1" in sin and "revisa" in sin, plano(sin))
+    check("el resto del texto no se toca", aplicar("[Task Switch: 7 -> 21]") == "[Task Switch: 7 -> 21]")
+
+    section("[number box] si el modelo se salta el formato, se detecta")
+    from helper.solvers import number_box_sin_linea
+    check("cuenta hecha por el modelo", number_box_sin_linea("[Number Box: 10 - 6 × 1 -> 6]"))
+    check("cuenta con solo restas", number_box_sin_linea("[Number Box: 10 - 6 - 1 -> 6]"))
+    check("la linea buena pasa", not number_box_sin_linea("NUMBER BOX: 6 10 1 10 -> 6"))
+    check("otros juegos no cuentan", not number_box_sin_linea("[Task Switch: 7 -> 21]"))
+    from helper.solvers import number_box_mal_leido
+    check("numeros sin solucion: mal leido", number_box_mal_leido("NUMBER BOX: 1 1 1 1 -> 24"))
+    check("numeros con solucion: bien leido", not number_box_mal_leido("NUMBER BOX: 6 10 1 10 -> 6"))
+    check("la plantilla pide la linea", "NUMBER BOX: <ficha>" in JUEGOS_COGNITIVOS)
+    check("sin numeros de ejemplo que el modelo copie", "3 8 2 5" not in JUEGOS_COGNITIVOS)
+    check("avisa del cero tachado", "CERO" in JUEGOS_COGNITIVOS)
+
+    section("[zona del cursor] se quito")
+    from helper import capture
+    from helper.config import Config as _Config
+    check("ya no es un modo de captura", "cursor_zone" not in capture.MODES)
+    check("una config que lo tenia vuelve al monitor",
+          _Config({"capture": {"mode": "cursor_zone", "monitor_index": 1}})["capture"]["mode"]
+          == "active_monitor")
+
+
 def main() -> int:
     for test in (
         test_hotkey,
@@ -1250,6 +1724,10 @@ def main() -> int:
         test_dpi,
         test_aislamiento_sesiones,
         test_varias_sesiones,
+        test_groq,
+        test_chatgpt,
+        test_relevo_groq,
+        test_solvers,
     ):
         test()
 

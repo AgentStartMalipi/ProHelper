@@ -396,6 +396,50 @@ No micro-optimization tricks: I would rather read code I can follow than code
 that is short."""
 
 
+# En espanol a proposito, como lo escribio el usuario: el idioma de la
+# plantilla decide el de la respuesta (ver LANGUAGE_RULES).
+JUEGOS_COGNITIVOS = """Actua como un asistente de analisis de patrones y respuestas
+rapidas. Cada captura muestra un juego o ejercicio cognitivo (Tower, Number
+Box, Task Switch, Balloon, Pincode, Code Compare, Stock Indicator, Pattern
+Guess, Shapeshift...). Dame la solucion optima lo mas rapido posible.
+
+1. Identifica el tipo de ejercicio (planificacion, calculo, memoria, riesgo,
+   atencion, inferencia) sin rodeos.
+
+2. Resuelve segun el tipo:
+   - NUMBER BOX: hay que usar TODOS los numeros, cada uno una vez, para
+     llegar al objetivo. NO hagas tu la cuenta: responde SOLO esta linea:
+       NUMBER BOX: <ficha> <ficha> <ficha> <ficha> -> <objetivo>
+     Las fichas son los CUADRADOS blancos (normalmente cuatro). El objetivo es
+     el numero del CIRCULO oscuro del centro: va despues de "->" y NUNCA entre
+     las fichas. Respeta el formato exacto, con "NUMBER BOX:" delante.
+     Copia los numeros de ESTA pantalla, digito a digito; nunca los de un
+     ejemplo. El helper encuentra la combinacion exacta a partir de esa linea.
+     OJO con la fuente: dibuja el CERO con una barra diagonal dentro (0̸).
+     Ese simbolo es 0, nunca 8 ni 9: "10" con el cero tachado es diez, "20"
+     es veinte. Un 8 tiene dos lazos cerrados; un 9, un lazo arriba y un
+     palo abajo.
+   - CALCULO (Task Switch y similares): haz la operacion y da el resultado
+     numerico directo.
+   - MEMORIA (Pincode, Code Compare): identifica la secuencia o el codigo
+     correcto comparandolo con el patron de referencia.
+   - TIEMPO / REFLEJOS (Tower, Balloon, Stock Indicator): lee el estado actual
+     (altura de la torre, nivel de aire, color del indicador) y di el
+     siguiente paso o accion exacta.
+   - INFERENCIA (Pattern Guess, Shapeshift): analiza formas, colores y
+     posiciones y deduce la respuesta logica.
+
+3. Formato ultra conciso, en una sola linea:
+   [Tipo: Ejercicio] -> [Accion/Resultado] -> [Razon breve, solo si hace falta]
+   Ejemplos: [Task Switch: 3+4 -> 7]   [Pattern Guess: Azul con Triangulo]
+   Este formato manda sobre cualquier otra regla de formato de arriba: la
+   respuesta entera es esa linea entre corchetes, sin nada debajo. Sin
+   explicaciones, sin preambulo.
+
+El objetivo es velocidad y precision: actua como un analista de datos en
+tiempo real."""
+
+
 PRESETS = [
     {
         "nombre": "Resolver lo que hay en pantalla",
@@ -419,6 +463,10 @@ PRESETS = [
     {
         "nombre": "Aptitud SHL / Cubiks / Saville (banca)",
         "texto": APTITUDE,
+    },
+    {
+        "nombre": "Juegos cognitivos (Tower, Balloon, Task Switch...)",
+        "texto": JUEGOS_COGNITIVOS,
     },
     {
         "nombre": "Depurar repo desconocido (con memoria)",
@@ -447,6 +495,14 @@ PRESETS = [
         "texto": "Traduce al espanol el texto que veas.",
     },
 ]
+
+# Las IA que pueden responder. La etiqueta es lo que se ve en el selector y en
+# el menu del panel.
+PROVIDERS = {
+    "claude": "Claude",
+    "groq": "Groq (qwen3.8-27b)",
+    "chatgpt": "ChatGPT (gpt-6-luna)",
+}
 
 LANGUAGE_LABELS = {
     "auto": "Automatico — el idioma en que le escribas",
@@ -497,8 +553,30 @@ DEFAULTS: dict[str, Any] = {
     # Sube y baja por las respuestas anteriores de la sesion con las flechas.
     # Al salir del modo el panel vuelve solo a la ultima respuesta.
     "scroll_hotkey": "alt+5",
+    # Que IA responde: "claude" o "groq". Se elige al abrir cada sesion y se
+    # recuerda la ultima eleccion para la siguiente.
+    "provider": "claude",
     "model": "claude-opus-5",
     "effort": "low",
+    # Groq. Mejor la key en GROQ_API_KEY del .env (ver load_env), que gana
+    # sobre esta; esta queda para quien la pegue desde el dialogo.
+    "groq_api_key": "",
+    # qwen3.8-27b ve imagenes. llama-3.1-8b-instant estaba pedido, pero en
+    # Groq ya es solo de Enterprise: la API respondia 404 con una key normal.
+    "groq_model": "qwen/qwen3.8-27b",
+    # Si groq_model no ve imagenes, los turnos con captura van a este.
+    # Vacio = se manda solo el texto, sin la captura.
+    "groq_vision_model": "qwen/qwen3.8-27b",
+    # Relevo: con una sesion de Groq, si se agota su cupo por minuto, la
+    # captura la responde este modelo de Claude hasta que Groq se recupere.
+    # Sonnet 5.5 porque fue el Claude mas rapido medido (empata con Opus 5)
+    # y cuesta la mitad. Vacio = sin relevo: sale el aviso de esperar.
+    "groq_fallback_model": "claude-sonnet-5-5",
+    # ChatGPT por el CLI de Codex, con tu login (sin API key). gpt-6-luna es
+    # el rapido; gpt-6-astra el mas capaz. Con cuenta de ChatGPT otros modelos
+    # (gpt-6.1-sol, gpt-5.4-mini) dan 400.
+    "codex_model": "gpt-6-luna",
+    "codex_effort": "low",
     # Lado largo maximo de la imagen enviada. Por encima de ~1568px el modelo
     # no gana detalle util y la captura cuesta bastante mas.
     "max_image_edge": 1568,
@@ -521,6 +599,31 @@ DEFAULTS: dict[str, Any] = {
     # capturar una pantalla y leer la respuesta en la otra.
     "panel_monitor": None,
 }
+
+
+# Claves fuera del config.json: `.env` en la raiz del proyecto (ver
+# .env.example). Esta en .gitignore, asi que la key nunca se sube al repo.
+ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+
+def load_env(path: Path = ENV_FILE) -> None:
+    """Pasa las lineas CLAVE=valor del .env a las variables de entorno.
+
+    Una variable ya definida en Windows gana sobre el archivo. Sin
+    python-dotenv a proposito: el formato cabe en unas lineas.
+    """
+    if not path.exists():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if value and key.strip() not in os.environ:
+            os.environ[key.strip()] = value
 
 
 def config_dir() -> Path:
@@ -634,6 +737,12 @@ def _merge(defaults: dict[str, Any], stored: dict[str, Any]) -> dict[str, Any]:
 
     out["hotkeys"] = normalize_hotkeys(out.get("hotkeys")) or list(DEFAULTS["hotkeys"])
     out["presets"] = normalize_presets(out.get("presets"))
+    if out.get("provider") not in PROVIDERS:
+        out["provider"] = DEFAULTS["provider"]
+    # Hubo un modo "zona alrededor del cursor" y se quito: si el raton no
+    # estaba justo encima, cortaba lo que habia que leer.
+    if out["capture"].get("mode") == "cursor_zone":
+        out["capture"] = dict(DEFAULTS["capture"])
     return out
 
 

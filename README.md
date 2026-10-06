@@ -130,6 +130,59 @@ panel te avisa.
 Para qué sirve: dejar una sesión con el pre-prompt de LeetCode y otra con el de
 depurar, y saltar entre las dos sin perder ninguna de las dos conversaciones.
 
+### Elegir la IA: Claude, Groq o ChatGPT
+
+Al abrir una sesión, arriba del todo, eliges quién responde: **Claude** (como
+siempre), **Groq** (`qwen/qwen3.8-27b`) o **ChatGPT** (`gpt-6-luna`). La última elección queda guardada
+y es la que sale marcada la próxima vez.
+
+La API key de Groq va en un archivo `.env` en la raíz del proyecto (está en
+`.gitignore`, nunca se sube):
+
+1. Saca la key en <https://console.groq.com/keys> (empieza por `gsk_`).
+2. Copia `.env.example` como `.env`, si no existe ya.
+3. Ponla en la línea `GROQ_API_KEY=gsk_...` y reinicia el helper.
+
+Si no hay `.env`, el diálogo de nueva sesión te la pide y la guarda en
+`config.json`; la del `.env` gana sobre esa.
+
+Con la sesión abierta, **clic derecho en el panel** abre un menú para cambiar
+de IA sin cerrarla. Con **Usar pasados** en modo Resumen las notas de las
+capturas anteriores son texto, así que la otra IA las recibe igual.
+
+`qwen3.8-27b` ve las capturas y responde en ~1 s. Se pidió
+`llama-3.1-8b-instant`, pero en Groq ese modelo ya es solo de Enterprise (con
+una key normal la API responde 404). Si pones en `groq_model` uno de solo texto
+(p. ej. `openai/gpt-oss-20b`), las preguntas con captura van a
+`groq_vision_model`. Groq no devuelve costo, así que el panel marca $0.
+
+**Relevo de Groq.** El plan gratuito de Groq da para ~3 capturas por minuto.
+En una sesión de Groq, cuando el cupo no alcanza para otra captura, esa
+captura la responde **Claude Sonnet 5.5** (el Claude más rápido medido, ~4 s,
+~$0.012) y Groq vuelve solo en cuanto se recupera — unos segundos, no el minuto
+entero: el cupo se rellena poco a poco y basta con que alcance para una. El pie
+del panel dice `Respondió Claude · Groq vuelve en Ns`. Solo pasa con sesiones de
+Groq; el modelo de relevo se cambia en `groq_fallback_model` (vacío = sin
+relevo, sale el aviso de esperar).
+
+**ChatGPT** va como Claude: por su CLI (`codex exec`), con tu login de ChatGPT
+y sin API key. Hace falta Codex CLI instalado y con sesión iniciada
+(`npm install -g @openai/codex` y `codex login`). Igual que con Claude, se le
+apaga el harness de agente (shell, búsqueda web, skills, `AGENTS.md`) y se
+reemplazan sus instrucciones por las del helper: la entrada baja de ~16k a
+~8.6k tokens. Con cuenta de ChatGPT sirven `gpt-6-luna` (de serie) y
+`gpt-6-astra`; `gpt-6.1-sol` y `gpt-5.4-mini` dan error.
+
+Medido con la misma captura y el modo de serie de "Usar pasados":
+
+| IA | Por captura | Costo |
+|---|---|---|
+| Groq `qwen3.8-27b` | 1–2 s (hasta ~5 s) | gratis, ~3 capturas/minuto |
+| Claude Sonnet 5.5 | 3.8–4.9 s | ~$0.012 |
+| Claude Opus 5 | 3.9–4.6 s | ~$0.03 |
+| ChatGPT `gpt-6-luna` | 5.7–9.6 s | suscripción de ChatGPT |
+| ChatGPT `gpt-6-astra` | 8.4–9.2 s | suscripción de ChatGPT |
+
 ### Una sesión, un prompt
 
 Cada sesión es una conversación aparte con su propio juego de instrucciones, y
@@ -233,7 +286,12 @@ Vive en `%APPDATA%\helper\config.json` y se edita desde el botón `⚙`.
 - **Idioma** — automático por defecto: responde en el idioma en que escribas el
   pre-prompt o la pregunta. Si no escribes nada, responde en español. También
   puedes forzarlo a español o inglés.
-- **Modelo** — Opus 5 por defecto; Sonnet 5 si quieres abaratar.
+- **Modelo de Claude** — Opus 5 por defecto; Sonnet 5 si quieres abaratar.
+- **Groq** — la key en `GROQ_API_KEY` del `.env` (o `groq_api_key` aquí),
+  `groq_model` (de serie `qwen/qwen3.8-27b`), `groq_vision_model` y
+  `groq_fallback_model` (el relevo, de serie `claude-sonnet-5-5`). La IA de
+  la última sesión se guarda en `provider` (`claude`, `groq` o `chatgpt`).
+- **ChatGPT** — `codex_model` (de serie `gpt-6-luna`) y `codex_effort` (`low`).
 - **Profundidad** — baja por defecto. Para "mirar y responder corto", razonar
   más no mejora la respuesta y sí la hace lenta.
 - **Reglas de concisión** — las reglas de formato por tipo de pregunta. Si las

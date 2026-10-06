@@ -37,6 +37,9 @@ class Reply:
     cost_usd: float
     duration_ms: int
     session_id: str
+    # El modelo que respondio de verdad, para el log y el pie del panel. Con
+    # Groq puede no ser el elegido (las capturas van al de vision).
+    model: str = ""
 
     @property
     def cost_label(self) -> str:
@@ -160,6 +163,7 @@ class ClaudeClient:
         effort: str | None = None,
         extra_images: list[tuple[str, Path]] | None = None,
     ) -> Reply:
+        model = model or self.config["model"]
         args = self._args(session_id, resume, system_prompt, model, effort)
         payload = _user_message(question, image_path, extra_images) + "\n"
 
@@ -189,4 +193,5 @@ class ClaudeClient:
             cost_usd=float(result.get("total_cost_usd") or 0.0),
             duration_ms=int(result.get("duration_ms") or 0),
             session_id=result.get("session_id") or session_id,
+            model=model,
         )

@@ -96,8 +96,13 @@ def parse(text: str) -> tuple[str, str]:
         m = _MEMO.match(lineas[i])
         if m:
             memo = m.group(1).strip("`* \t")
-            limpio = "\n".join(lineas[:i] + lineas[i + 1:]).rstrip()
-            return limpio, memo
+            # Algun modelo (qwen en Groq) repite la linea: ninguna se enseña.
+            limpio = "\n".join(
+                l for l in lineas[:i] + lineas[i + 1:] if not _MEMO.match(l)
+            ).rstrip()
+            # Visto con qwen en Groq: a veces escribe la respuesta solo en la
+            # nota. Mejor ensenar la nota que un panel en blanco.
+            return limpio or memo, memo
         if lineas[i].strip():
             break  # la nota tiene que ser la ultima linea con texto
     return text.strip(), ""

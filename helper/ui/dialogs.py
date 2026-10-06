@@ -6,11 +6,12 @@ de captura; separarlos obligaria a exportar esas piezas sin necesidad.
 
 from __future__ import annotations
 
+import os
 import tkinter as tk
 from typing import Any, Callable
 
 from .. import capture, privacy
-from ..config import LANGUAGE_LABELS, Config, normalize_hotkeys
+from ..config import LANGUAGE_LABELS, PROVIDERS, Config, normalize_hotkeys
 from . import theme
 from .widgets import FlatButton, PrimaryButton, make_draggable, separator
 
@@ -239,9 +240,29 @@ class SessionDialog(Modal):
         super().__init__(parent, "Nueva sesion")
         self.cfg = cfg
 
+        # Primero, que IA responde: arranca en la ultima que elegiste.
+        field_label(self.content, "Modelo de IA")
+        self.provider = OptionRow(
+            self.content, list(PROVIDERS.items()), cfg["provider"], self._on_provider
+        )
+        self.provider.pack(fill="x")
+        # Solo aparece si eliges Groq y todavia no hay key guardada.
+        self.key_box = tk.Frame(self.content, bg=theme.BG)
+        field_label(self.key_box, "API key de Groq")
+        self.groq_key = entry(self.key_box)
+        self.groq_key.configure(show="•")
+        self.key_error = hint_label(
+            self.key_box,
+            "Mejor en GROQ_API_KEY del archivo .env del proyecto. Si la pegas "
+            "aqui, se guarda en tu config.json.",
+        )
+        self._key_anchor = tk.Frame(self.content, bg=theme.BG)
+        self._key_anchor.pack(fill="x")
+        self._on_provider(self.provider.get())
+
         hint_label(
             self.content,
-            "El pre-prompt es el contexto que Claude mantiene durante toda la "
+            "El pre-prompt es el contexto que la IA mantiene durante toda la "
             "sesion. Cada captura entra en la misma conversacion, asi que ve "
             "las anteriores. Puedes dejarlo vacio.",
         )
@@ -294,6 +315,15 @@ class SessionDialog(Modal):
 
         self.preprompt.focus_set()
 
+    def _hace_falta_key(self) -> bool:
+        return not (self.cfg.get("groq_api_key") or os.environ.get("GROQ_API_KEY"))
+
+    def _on_provider(self, key: str) -> None:
+        if key == "groq" and self._hace_falta_key():
+            self.key_box.pack(fill="x", after=self._key_anchor)
+        else:
+            self.key_box.pack_forget()
+
     def _use_preset(self, preset: dict) -> None:
         self.preprompt.delete("1.0", "end")
         self.preprompt.insert("1.0", preset["texto"])
@@ -310,7 +340,18 @@ class SessionDialog(Modal):
         escrito = self.preprompt.get("1.0", "end").strip()
         # Si tocaste el texto de la plantilla, su nombre ya no lo describe.
         preset = self._preset if escrito == self._preset_texto else None
+        provider = self.provider.get()
+        key = self.groq_key.get().strip()
+        if provider == "groq" and self._hace_falta_key() and not key:
+            self.key_error.configure(
+                text="Sin API key Groq no puede responder. Pegala aqui.",
+                fg=theme.ERROR,
+            )
+            self.groq_key.focus_set()
+            return
         self.result = {
+            "provider": provider,
+            "groq_api_key": key,
             "preprompt": escrito,
             "preset": preset,
             "model": self._model,
@@ -431,7 +472,7 @@ class SettingsDialog(Modal):
             "espanol.",
         )
 
-        field_label(self.content, "Modelo")
+        field_label(self.content, "Modelo de Claude")
         self.model = OptionRow(
             self.content,
             [
@@ -441,6 +482,37 @@ class SettingsDialog(Modal):
             cfg["model"],
         )
         self.model.pack(fill="x")
+
+        field_label(self.content, "API key de Groq")
+        self.groq_key = entry(self.content, cfg["groq_api_key"])
+        self.groq_key.configure(show="•")
+        field_label(self.content, "Modelo de Groq")
+        self.groq_model = entry(self.content, cfg["groq_model"])
+        field_label(self.content, "Modelo de Groq para las capturas")
+        self.groq_vision_model = entry(self.content, cfg["groq_vision_model"])
+        hint_label(
+            self.content,
+            "Si el modelo de Groq no ve imagenes, las preguntas con captura van "
+            "al modelo de capturas. Vacio = solo se manda el texto. "
+            "La IA de cada sesion se elige al abrirla, o con clic derecho en "
+            "el panel.",
+        )
+
+        field_label(self.content, "Modelo de ChatGPT")
+        self.codex_model = OptionRow(
+            self.content,
+            [
+                ("gpt-6-luna", "gpt-6-luna — el rapido"),
+                ("gpt-6-astra", "gpt-6-astra — el mas capaz"),
+            ],
+            cfg["codex_model"],
+        )
+        self.codex_model.pack(fill="x")
+        hint_label(
+            self.content,
+            "ChatGPT va por el CLI de Codex con tu login de ChatGPT (codex "
+            "login), sin API key.",
+        )
 
         field_label(self.content, "Profundidad de razonamiento")
         self.effort = OptionRow(
@@ -511,6 +583,10 @@ class SettingsDialog(Modal):
             "language": self.language.get(),
             "model": self.model.get(),
             "effort": self.effort.get(),
+            "groq_api_key": self.groq_key.get().strip(),
+            "groq_model": self.groq_model.get().strip() or "qwen/qwen3.8-27b",
+            "groq_vision_model": self.groq_vision_model.get().strip(),
+            "codex_model": self.codex_model.get(),
             "history_mode": self.history_mode.get(),
             "capture": self.target.get(),
             "concision": self.concision.get("1.0", "end").strip(),

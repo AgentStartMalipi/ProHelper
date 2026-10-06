@@ -1,3 +1,4 @@
 mss>=9.0.1
 Pillow>=10.0.0
 pywin32>=306
+interception-python>=0.0.1
