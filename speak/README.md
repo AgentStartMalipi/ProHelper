@@ -159,8 +159,11 @@ Tres piezas:
    la fuente. Si no está en tus fuentes lo dice (⚠) y propone una salida
    segura; no inventa precios, cifras ni compromisos. Medido con
    `claude-sonnet-5`: primer texto ~3 s, respuesta completa ~6-7 s.
-   **⚡ Responder ahora (F8)** responde a lo último que dijo el otro aunque no
-   parezca pregunta. **📌 Siempre visible** deja la ventana encima de Teams o
+   **⚡ Responder ahora (F8 o Alt+R)** responde a lo último que dijo el otro aunque no
+   parezca pregunta. F8 funciona con la ventana de SPEAK activa; **Alt+R**
+   (`COPILOT_HOTKEY`) es global: funciona aunque estés en Teams o Meet, con el
+   mismo `RegisterHotKey` de SCREEN. Si otra app ya lo tiene, queda solo para
+   la ventana de SPEAK y lo avisa. **📌 Siempre visible** deja la ventana encima de Teams o
    Zoom. Al detener queda `copilot.md` en la carpeta de la llamada.
 
 **Guía del copiloto** (en Preparar llamada, como el pre-prompt de SCREEN):
@@ -253,7 +256,11 @@ Por consola:
 | `CONTEXT_WINDOW` | intercambios que viajan completos al LLM; los anteriores, en una línea |
 | `TTS_ENABLED`, `TTS_RATE` | voz del entrevistador (voz de Windows) |
 | `LIVE_NOTES_INTERVAL` | segundos entre borradores de notas en vivo (60). `0` = en vivo solo transcripción y preguntas, sin LLM |
+| `NOTES_FINAL_FROM_AUDIO` | `false` (de serie): si hubo transcripción **En vivo**, esa es la final y el audio no se vuelve a subir; el botón **🎧 Transcribir audio** sube la grabación completa si quieres la versión más precisa. `true` = siempre se re-transcribe al detener |
+| `NOTES_SILENCE_WARN_MIN` | minutos grabando sin que nadie hable antes de avisar (5; la ventana parpadea en la barra de tareas). `0` = sin aviso |
+| `NOTES_KEEP_AUDIO` | `true` (de serie) guarda `me.wav` y `them.wav` de cada llamada. `false` = se borran al terminar la transcripción final (quedan transcripción y notas); si la transcripción falla, el audio se conserva |
 | `COPILOT_ENABLED` | copiloto en vivo (`true`) |
+| `COPILOT_HOTKEY` | atajo global de "Responder ahora" (`alt+r`; vacío = sin atajo global). SCREEN usa `ctrl+shift+c`, `alt+2`..`alt+5`, `alt+e`, `alt+f` |
 | `KB_DIR` | carpeta de conocimiento; vacío = `speak/data/knowledge`. También se elige en Preparar llamada |
 | `COPILOT_QUIET_S` | segundos de silencio del otro para dar su pregunta por terminada (1.2) |
 | `DISCOVERY_INTERVAL` | segundos entre exploraciones en vivo, si hubo conversación nueva (90). `0` = solo con el botón / F9 |

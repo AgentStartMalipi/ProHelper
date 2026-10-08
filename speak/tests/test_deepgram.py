@@ -15,8 +15,8 @@ from speak.transcriber import DeepgramSTT, STTError, _wav_bytes, make_stt
 def fake(stt: DeepgramSTT, payload: dict) -> list:
     calls = []
 
-    def _request(method, path, body=None, content_type="audio/wav"):
-        calls.append((method, path, body, content_type))
+    def _request(method, path, body=None, content_type="audio/wav", timeout=30.0, waits=(0.0,)):
+        calls.append((method, path, body, content_type, timeout))
         return payload
 
     stt._request = _request
@@ -91,6 +91,36 @@ class DeepgramTests(unittest.TestCase):
         stt2._request = down
         with self.assertRaises(STTNetworkError):
             stt2.transcribe(np.zeros(16000, np.float32), 16000)
+
+    def test_live_phrase_short_timeout_then_local(self):
+        # Medido 2026-10-07: una frase colgada 22 s detenia toda la transcripcion
+        # en vivo. Ahora: 8 s, un reintento con conexion nueva y luego Whisper.
+        from unittest import mock
+
+        class Local:
+            def transcribe_lang(self, audio, sr, prompt="", language=None):
+                return "texto local", None, 0.0
+
+        stt = DeepgramSTT("k", fallback_factory=Local)
+        conn = mock.Mock()
+        conn.getresponse.side_effect = TimeoutError("timed out")
+        stt._conn = lambda: conn
+        with mock.patch("speak.transcriber.time.sleep"):
+            self.assertEqual(stt.transcribe(np.zeros(16000, np.float32), 16000), "texto local")
+        self.assertEqual(conn.request.call_count, 2)
+        self.assertEqual(conn.timeout, DeepgramSTT.LIVE_TIMEOUT_S)
+        conn.sock.settimeout.assert_called_with(DeepgramSTT.LIVE_TIMEOUT_S)
+
+    def test_file_uses_long_timeout(self):
+        import tempfile, pathlib
+
+        stt = DeepgramSTT("k")
+        calls = fake(stt, {"results": {"utterances": []}})
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "call.wav"
+            p.write_bytes(_wav_bytes(np.zeros(1600, np.float32), 16000))
+            stt.transcribe_file(p)
+        self.assertEqual(calls[0][4], DeepgramSTT.FILE_TIMEOUT_S)
 
     def test_bad_key_does_not_fall_back(self):
         stt = DeepgramSTT("k", fallback_factory=lambda: self.fail("no debe usar respaldo"))

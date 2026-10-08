@@ -265,6 +265,8 @@ class LiveTranscriber:
         fixed = getattr(self.stt, "language", None)
         if fixed:
             return fixed  # lo fijo el usuario
+        if getattr(self.stt, "detects_language_per_phrase", False):
+            return None  # Deepgram "multi": cada frase en su idioma, sin fijar
         mine = self.language[who]
         other = next((lang for w, lang in self.language.items() if w != who and lang), None)
         if mine:
@@ -434,8 +436,11 @@ class LiveNotes:
                  who, ev.end - ev.start, ev.latency_s, lag, self.pending(who))
         if lag > 15 and time.monotonic() - getattr(self, "_lag_warned", 0) > 60:
             self._lag_warned = time.monotonic()
-            self.on_status(f"la transcripcion en vivo va {lag:.0f} s atrasada: prueba STT_LIVE_MODEL=tiny "
-                           "en speak/.env")
+            if getattr(self.stt, "name", "") == "deepgram":
+                hint = "Deepgram tardo en responder (red lenta o caida un momento); se recupera solo"
+            else:
+                hint = "prueba STT_LIVE_MODEL=tiny en speak/.env"
+            self.on_status(f"la transcripcion en vivo va {lag:.0f} s atrasada: {hint}")
         with self._lock:
             self._segs[who].append(Segment(ev.start, ev.end, ev.text, who))
             self._words += len(ev.text.split())

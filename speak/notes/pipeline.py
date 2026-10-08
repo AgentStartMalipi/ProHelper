@@ -195,6 +195,19 @@ def _merge_same(segs: list[Segment]) -> list[Segment]:
 AUDIO_EXT = {".wav", ".mp3", ".m4a", ".mp4", ".ogg", ".webm", ".flac", ".aac", ".mkv"}
 
 
+def discard_recording_audio(folder: Path) -> list[str]:
+    """Borra me.wav y them.wav de una carpeta de grabacion (NOTES_KEEP_AUDIO=false).
+    Devuelve los nombres borrados; si uno esta bloqueado por otro programa, se queda."""
+    removed = []
+    for name in ("me.wav", "them.wav"):
+        try:
+            (Path(folder) / name).unlink()
+            removed.append(name)
+        except OSError:
+            pass
+    return removed
+
+
 def load_any(path: Path, stt_factory, progress=lambda msg: None) -> Transcript:
     """Carpeta de grabacion, archivo de audio o transcripcion de texto."""
     path = Path(path)

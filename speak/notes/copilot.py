@@ -162,10 +162,47 @@ def guess_language(text: str) -> str:
     """Idioma de la pregunta, para que la respuesta salga en el mismo. Medido:
     con brief y fuentes en espanol, Claude contestaba en espanol preguntas
     hechas en ingles (4 de 4) aunque el prompt pedia el idioma del otro."""
-    words = re.findall(r"[a-záéíóúñü]+", text.lower())
-    es = sum(w in _ES for w in words) + 2 * sum(c in "¿¡ñáéíóú" for c in text.lower())
+    # Solo el FINAL cuenta: ahi esta la pregunta. Medido 2026-10-08: un turno
+    # de 5 min casi todo en espanol terminaba con "Back to English... Tell me
+    # about a time..." y se contestaba en espanol porque ganaba el conteo total.
+    tail = _question_tail(text)
+    low = tail.lower()
+    if re.search(r"\b(back to english|in english|switch to english)\b", low):
+        return "English"
+    if re.search(r"\b(en español|en espanol|volvamos al español|pasemos a español)\b", low):
+        return "Spanish"
+    words = re.findall(r"[a-záéíóúñü]+", low)
+    es = sum(w in _ES for w in words) + 2 * sum(c in "¿¡ñáéíóú" for c in low)
     en = sum(w in _EN for w in words)
     return "Spanish" if es > en else "English"
+
+
+def _question_tail(text: str, max_words: int = 40) -> str:
+    """Lo ultimo que dijeron: desde la ultima frase anterior a la pregunta final,
+    como maximo unas 40 palabras."""
+    words = text.split()
+    return " ".join(words[-max_words:])
+
+
+# La llamada vista por el copiloto. Con 2000 caracteres, a la pregunta 10 ya no
+# veia "Tell me about yourself" y volvia a contar historias ya dichas.
+RECENT_CHARS = 6000
+
+
+def copilot_sources(kb: KnowledgeBase, question: str, recent: str, max_chars: int = 7000) -> list:
+    """Pasajes para responder: primero los que encajan con la PREGUNTA sola y
+    despues los de pregunta + final de la llamada. Medido 2026-10-08: con solo
+    la busqueda mezclada, el ruido de la transcripcion tapaba la respuesta
+    preparada y 9 de 10 preguntas con respuesta preparada improvisaban."""
+    out, used, seen = [], 0, set()
+    for chunk in (kb.search(question, k=3, max_chars=3000)
+                  + kb.search(question + " " + recent[-400:], k=6, max_chars=6000)):
+        if id(chunk) in seen or (used + len(chunk.text) > max_chars and out):
+            continue
+        seen.add(id(chunk))
+        out.append(chunk)
+        used += len(chunk.text)
+    return out
 
 
 def answer_prompt(question: str, brief: str, sources: str, recent: str, mode: str,
@@ -746,11 +783,10 @@ class Copilot:
         return ans
 
     def _generate(self, ans: Answer, tr: Transcript, cancel: threading.Event) -> None:
-        recent = render(tr)[-2000:]
+        recent = render(tr)[-RECENT_CHARS:]
         sources = "(no documents loaded)"
         if self.kb is not None and self.kb.chunks:
-            query = ans.question + " " + recent[-400:]
-            sources = format_sources(self.kb.search(query, k=6, max_chars=6000))
+            sources = format_sources(copilot_sources(self.kb, ans.question, recent))
         system, user = answer_prompt(ans.question, self._brief(), sources, recent, self.mode, self._guide())
         acc = ""
         t0 = time.time()

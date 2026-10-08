@@ -320,6 +320,20 @@ class StickyLanguageTests(unittest.TestCase):
         self.run_phrases(stt, [(THEM, 2.5, 0.0), (THEM, 2.5, 10.0)])
         self.assertEqual(stt.asked, ["en", "en"])
 
+    def test_per_phrase_detector_never_fixes_language(self):
+        # Deepgram "multi": cada frase se detecta sola, asi se puede cambiar
+        # de ingles a espanol en cualquier momento de la llamada.
+        stt = self.LangSTT()
+        stt.detects_language_per_phrase = True
+        self.run_phrases(stt, [(THEM, 2.5, 10.0 * k) for k in range(4)] + [(ME, 0.8, 50.0)])
+        self.assertEqual(stt.asked, [None] * 5)
+
+    def test_deepgram_multi_detects_per_phrase(self):
+        from speak.transcriber import DeepgramSTT
+
+        self.assertTrue(DeepgramSTT("k").detects_language_per_phrase)
+        self.assertFalse(DeepgramSTT("k", language="es").detects_language_per_phrase)
+
 
 class GlossaryAndSpanishTests(unittest.TestCase):
     def test_glossary_keeps_names_and_acronyms(self):
@@ -401,6 +415,14 @@ class AnswerLanguageTests(unittest.TestCase):
         self.assertEqual(guess_language("Can you tell me about your PCI experience?"), "English")
         self.assertEqual(guess_language("¿Qué experiencia tienen con PCI?"), "Spanish")
         self.assertEqual(guess_language("Usted es creen que Aurora aguanta 10 veces esa carga."), "Spanish")
+        # Turno largo en espanol que termina cambiando a ingles: manda el final.
+        long_es = ("Vale, ahora cambiamos un momento a español. ¿Has trabajado en remoto antes? ¿Cómo te organizas con "
+                   "tu equipo cuando no lo ves en persona? Pues nosotros nos comunicamos en inglés y dejamos todo escrito. "
+                   "Eso es muy útil aquí, porque trabajamos mucho entre Barcelona y Varsovia. ")
+        self.assertEqual(guess_language(long_es + "Okay. Back to English. Tell me about a time you had to learn "
+                                        "something new quickly. What was it, and how did you approach it?"), "English")
+        self.assertEqual(guess_language("Thanks, that was great. Let's continue in Spanish now. ¿Y por qué quieres "
+                                        "dejar Amadeus después de seis meses?"), "Spanish")
         # Brief y fuentes en espanol, pregunta en ingles: la respuesta en ingles.
         system, user = answer_prompt("Do you think Aurora can handle ten times that load?",
                                      "Reunión con Acme", "Precio: 12.000 USD", "", "venta",

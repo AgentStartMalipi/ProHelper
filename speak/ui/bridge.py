@@ -58,3 +58,4 @@ class LiveSignals(QObject):
     discovery = Signal(str, bool)  # markdown, terminado
     attached = Signal(str)  # aviso al terminar de anadir archivos
     recording = Signal(object)  # (grabadora, excepcion o None) al terminar de abrir el audio
+    hotkey = Signal()  # el atajo global de "Responder ahora" (llega del hilo del listener)

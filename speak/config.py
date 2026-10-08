@@ -121,11 +121,26 @@ class Config:
     # En vivo: cada cuantos segundos (si hubo habla nueva) Claude reescribe el
     # borrador de notas. 0 = en vivo solo transcripcion y preguntas, sin LLM.
     LIVE_NOTES_INTERVAL: int = 60
+    # false = al terminar la transcripcion final se borran me.wav y them.wav
+    # (quedan transcripcion y notas). Si la transcripcion falla, el audio se
+    # conserva para no perder la llamada.
+    NOTES_KEEP_AUDIO: bool = True
+    # false (de serie) = si hubo transcripcion En vivo, esa es la final y el
+    # audio NO se vuelve a subir (cada minuto se pagaba dos veces en Deepgram).
+    # Para la version mas precisa: boton "Transcribir audio". true = como antes.
+    NOTES_FINAL_FROM_AUDIO: bool = False
+    # Aviso si llevas estos minutos grabando sin que nadie hable. 0 = sin aviso.
+    NOTES_SILENCE_WARN_MIN: int = 5
 
     # --- Copiloto ----------------------------------------------------------
     # Responde en vivo las preguntas del otro lado (venta, reunion, soporte,
     # llamada; nunca en entrevista) con tu brief y tus documentos.
     COPILOT_ENABLED: bool = True
+    # Atajo GLOBAL para "Responder ahora" (como F8, pero funciona aunque estes
+    # en Teams o Meet). Mismo metodo que SCREEN: RegisterHotKey de Windows, sin
+    # hook de teclado. SCREEN usa ctrl+shift+c, alt+2..5, alt+e y alt+f.
+    # "" = sin atajo global.
+    COPILOT_HOTKEY: str = "alt+r"
     # Carpeta de conocimiento (PDF, Word, PowerPoint, Markdown, texto, CSV).
     # "" = speak/data/knowledge (no se sube a git: suele ser de clientes).
     KB_DIR: str = ""

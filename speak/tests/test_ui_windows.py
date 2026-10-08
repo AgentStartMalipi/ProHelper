@@ -210,6 +210,7 @@ class UITestCase(unittest.TestCase):
         self.cfg.DISCOVERY_INTERVAL = 0
         self.cfg.COPILOT_QUIET_S = 0.3
         self.cfg.save = lambda *a, **k: None  # nunca escribir el .env real
+        self.cfg.COPILOT_HOTKEY = ""  # nunca registrar atajos globales reales en las pruebas
 
     def notes(self) -> nw.NotesWindow:
         w = nw.NotesWindow(self.cfg)
@@ -329,6 +330,11 @@ class NotesWindowTests(UITestCase):
         press(w, Qt.Key_F8)
         self.assertTrue(pump(lambda: any(a.forced and a.done for a in w.copilot.answers)))
 
+        # El atajo global (llega desde el hilo del listener) hace lo mismo que F8.
+        with mock.patch.object(w.copilot, "answer_now") as answer_now:
+            threading.Thread(target=w.live_sig.hotkey.emit).start()
+            self.assertTrue(pump(lambda: answer_now.called))
+
         folder = w.folder
         QTest.mouseClick(w.btn_stop, Qt.LeftButton)
         self.assertTrue(rec.stopped)
@@ -340,12 +346,18 @@ class NotesWindowTests(UITestCase):
         self.assertTrue((folder / "copilot.md").exists())
         self.assertIn("12.000 USD", (folder / "copilot.md").read_text(encoding="utf-8"))
 
-        # La pasada final (archivos) reemplaza la transcripcion en vivo.
+        # La transcripcion en vivo queda como final: el audio NO se vuelve a subir.
         self.assertTrue(pump(lambda: (folder / "transcript.md").exists()))
         self.assertTrue(pump(lambda: w.btn_rec.isEnabled()))
-        text = w.out_transcript.toPlainText()
-        self.assertIn("twelve thousand", text)
+        self.assertIn("audit cost", w.out_transcript.toPlainText())
+        self.assertNotIn("twelve thousand", w.out_transcript.toPlainText())
+        self.assertIn("no se volvio a subir", w.lbl_status.text())
         self.assertFalse(w.out_transcript.isReadOnly())
+
+        # Si la quiero mas precisa, el boton sube la grabacion completa.
+        self.assertTrue(w.btn_full.isEnabled())
+        QTest.mouseClick(w.btn_full, Qt.LeftButton)
+        self.assertTrue(pump(lambda: "twelve thousand" in w.out_transcript.toPlainText()))
 
         QTest.mouseClick(w.btn_notes, Qt.LeftButton)
         self.assertTrue(pump(lambda: (folder / "notes.md").exists()))
@@ -387,6 +399,115 @@ class NotesWindowTests(UITestCase):
         QTest.mouseClick(w.btn_stop, Qt.LeftButton)
         self.assertTrue(pump(lambda: "whisper se cayo" in w.lbl_status.text()))
         self.assertTrue(pump(lambda: w.btn_rec.isEnabled()))
+
+    def test_global_hotkey_registered_while_open(self):
+        import helper.hotkey as hk
+
+        started, stopped = [], []
+
+        class FakeListener:
+            def __init__(self, spec, on_press):
+                self.spec, self.on_press = spec, on_press
+
+            def start(self):
+                started.append(self.spec)
+
+            def stop(self):
+                stopped.append(self.spec)
+
+        self.cfg.COPILOT_HOTKEY = "alt+r"
+        with mock.patch.object(hk, "HotkeyListener", FakeListener):
+            w = self.notes()
+            self.assertEqual(started, ["alt+r"])
+            self.assertIn("Alt+R", w.btn_answer.text())
+            self.assertIn("cualquier ventana", w.out_copilot.toPlainText())
+            w.close()
+            self.assertEqual(stopped, ["alt+r"])
+            w.show()  # la ventana se reutiliza: vuelve a registrarlo
+            self.assertEqual(started, ["alt+r", "alt+r"])
+
+    def test_global_hotkey_taken_falls_back_to_window(self):
+        import helper.hotkey as hk
+
+        class TakenListener:
+            def __init__(self, spec, on_press):
+                pass
+
+            def start(self):
+                raise hk.HotkeyError("no se pudo registrar 'alt+r': otra aplicacion ya tiene ese atajo")
+
+        self.cfg.COPILOT_HOTKEY = "alt+r"
+        with mock.patch.object(hk, "HotkeyListener", TakenListener):
+            w = self.notes()
+        self.assertIsNone(w._hotkey)
+        self.assertIn("solo funciona con esta ventana", w.lbl_status.text())
+        self.assertIsNotNone(w._local_shortcut)
+
+    def test_final_from_audio_option_keeps_old_behaviour(self):
+        self.cfg.NOTES_FINAL_FROM_AUDIO = True
+        w = self.notes()
+        rec = self.start_live_call(w, "venta")
+        rec.push("them", np.concatenate([quiet(0.3), tone(1.0, 0.2), quiet(0.8)]))
+        self.assertTrue(pump(lambda: "audit cost" in w.out_transcript.toPlainText()))
+        QTest.mouseClick(w.btn_stop, Qt.LeftButton)
+        self.assertTrue(pump(lambda: "twelve thousand" in w.out_transcript.toPlainText()))
+
+    def test_silence_warning_after_minutes_without_voice(self):
+        self.cfg.NOTES_SILENCE_WARN_MIN = 5
+        w = self.notes()
+        rec = self.start_live_call(w)
+        rec.levels = {"me": 0.0, "them": 0.0}  # silencio
+        w._last_voice = time.monotonic() - 5 * 60 - 1  # 5 min sin que nadie hable
+        with mock.patch.object(nw.QApplication, "alert") as alert:
+            self.assertTrue(pump(lambda: "sin que nadie hable" in w.lbl_status.text()))
+            self.assertTrue(alert.called)
+        self.assertTrue(w._silence_warned)
+        # Alguien vuelve a hablar: el aviso se quita.
+        w._heard_voice()
+        self.assertNotIn("sin que nadie hable", w.lbl_status.text())
+
+    def test_no_silence_warning_when_disabled(self):
+        self.cfg.NOTES_SILENCE_WARN_MIN = 0
+        w = self.notes()
+        rec = self.start_live_call(w)
+        rec.levels = {"me": 0.0, "them": 0.0}
+        w._last_voice = time.monotonic() - 3600
+        pump(lambda: False, 0.6)
+        self.assertNotIn("sin que nadie hable", w.lbl_status.text())
+
+    def _record_and_stop(self, w: nw.NotesWindow) -> Path:
+        w.consent.setChecked(True)
+        w.live.setChecked(False)
+        QTest.mouseClick(w.btn_rec, Qt.LeftButton)
+        self.assertTrue(pump(lambda: w.btn_stop.isEnabled()))
+        folder = w.folder
+        QTest.mouseClick(w.btn_stop, Qt.LeftButton)
+        self.assertTrue(pump(lambda: w.btn_rec.isEnabled()))
+        return folder
+
+    def test_audio_kept_by_default(self):
+        folder = self._record_and_stop(self.notes())
+        self.assertTrue((folder / "transcript.md").exists())
+        self.assertTrue((folder / "me.wav").exists())
+        self.assertTrue((folder / "them.wav").exists())
+
+    def test_audio_discarded_after_transcription(self):
+        self.cfg.NOTES_KEEP_AUDIO = False
+        w = self.notes()
+        folder = self._record_and_stop(w)
+        self.assertTrue(pump(lambda: (folder / "transcript.md").exists()))
+        self.assertIn("twelve thousand", w.out_transcript.toPlainText())
+        self.assertFalse((folder / "me.wav").exists())
+        self.assertFalse((folder / "them.wav").exists())
+
+    def test_audio_kept_when_transcription_fails(self):
+        self.cfg.NOTES_KEEP_AUDIO = False
+        self.stt.fail_files = True
+        w = self.notes()
+        folder = self._record_and_stop(w)
+        self.assertTrue(pump(lambda: "whisper se cayo" in w.lbl_status.text()))
+        self.assertTrue((folder / "me.wav").exists())
+        self.assertTrue((folder / "them.wav").exists())
         self.assertTrue(w.btn_audio.isEnabled())
         APP.processEvents()
         self.assertIn("c0392b", w.lbl_status.styleSheet())  # sigue en rojo

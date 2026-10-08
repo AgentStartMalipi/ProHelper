@@ -288,6 +288,13 @@ class DeepgramSTT(SpeechToText):
         self._fallback: SpeechToText | None = None
         self._fallback_lock = threading.Lock()
 
+    @property
+    def detects_language_per_phrase(self) -> bool:
+        """En "multi" Deepgram detecta el idioma en cada frase (y mezclas): el
+        idioma no se fija por hablante. Fijarlo en "en" hacia que lo dicho en
+        espanol saliera como ingles sin sentido."""
+        return self.language is None
+
     def _conn(self):
         import http.client
 
@@ -297,19 +304,31 @@ class DeepgramSTT(SpeechToText):
             self._local.conn = conn
         return conn
 
+    # En vivo una frase vuelve en 0,3-2,5 s. Medido 2026-10-07: una peticion
+    # colgada tardo 22 s y, con el timeout de 30 s, todo lo que venia detras
+    # (y el copiloto) espero con ella. En vivo se corta antes y se reintenta
+    # una vez con conexion nueva; si vuelve a fallar, esa frase va con Whisper.
+    LIVE_TIMEOUT_S = 5.0
+    LIVE_WAITS = (0.0, 0.3)
+    # Archivos (la llamada entera al Detener): pueden ser 45 min de audio.
+    FILE_TIMEOUT_S = 300.0
+
     def _request(self, method: str, path: str, body: bytes | None = None,
-                 content_type: str = "audio/wav") -> dict:
+                 content_type: str = "audio/wav", timeout: float = 30.0,
+                 waits: tuple[float, ...] = (0.0, 0.4, 1.2)) -> dict:
         headers = {"Authorization": f"Token {self.api_key}"}
         if body is not None:
             headers["Content-Type"] = content_type
         # Reintentos con espera: una conexion reutilizada puede estar cerrada, y
         # el DNS del Wi-Fi a veces falla un instante (medido 2026-09-30: un
         # "getaddrinfo failed" suelto en medio de una llamada que iba bien).
-        waits = (0.0, 0.4, 1.2)
         for attempt, wait in enumerate(waits, 1):
             if wait:
                 time.sleep(wait)
             conn = self._conn()
+            conn.timeout = timeout  # para la proxima conexion
+            if conn.sock is not None:
+                conn.sock.settimeout(timeout)  # y para la que ya esta abierta
             try:
                 conn.request(method, path, body=body, headers=headers)
                 resp = conn.getresponse()
@@ -347,7 +366,8 @@ class DeepgramSTT(SpeechToText):
                         language: str | None = None) -> tuple[str, str | None, float]:
         body = _wav_bytes(audio, sample_rate)
         try:
-            res = self._request("POST", self._query(language), body)
+            res = self._request("POST", self._query(language), body,
+                                timeout=self.LIVE_TIMEOUT_S, waits=self.LIVE_WAITS)
         except STTNetworkError as exc:
             fb = self._get_fallback()
             if fb is None:
@@ -373,7 +393,7 @@ class DeepgramSTT(SpeechToText):
         path = Path(path)
         ctype = "audio/wav" if path.suffix.lower() == ".wav" else "application/octet-stream"
         res = self._request("POST", self._query(self.language, diarize="true", utterances="true"),
-                            path.read_bytes(), ctype)
+                            path.read_bytes(), ctype, timeout=self.FILE_TIMEOUT_S)
         utts = res.get("results", {}).get("utterances") or []
         speakers = {u.get("speaker") for u in utts}
         return [

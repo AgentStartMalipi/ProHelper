@@ -8,7 +8,7 @@ transcripcion por el analizador. Tambien importa audios y transcripciones.
 
 El panel **Copiloto** (derecha) responde en vivo lo que pregunta el otro
 lado, con el brief de **Preparar llamada** y la carpeta de conocimiento
-(`notes/copilot.py`). F8 = responder ahora. Su pestana **Exploracion** dice
+(`notes/copilot.py`). F8 o Alt+R = responder ahora. Su pestana **Exploracion** dice
 que falta saber y que preguntar (F9), antes o durante la llamada. 📎 anade
 documentos o diagramas en cualquier momento, tambien en plena llamada.
 """
@@ -45,11 +45,18 @@ from ..knowledge import IMAGE_EXT, SUPPORTED, KnowledgeBase
 from ..llm_client import make_llm
 from ..notes.analyzer import MODES, generate_notes, heuristic_report, me_share
 from ..notes.copilot import COPILOT_MODES, Copilot, Discovery, PrepSession, attach_file
-from ..notes.pipeline import ME, THEM, Transcript, _fmt, load_any, parse_transcript_text, render
+from ..notes.pipeline import (ME, THEM, Transcript, _fmt, discard_recording_audio, load_any,
+                              parse_transcript_text, render)
 from ..transcriber import FasterWhisperSTT, make_stt
 from .banner import ModeBanner
 from .bridge import LiveSignals, TaskSignals
 from .prep_window import PasteDialog, PrepWindow, load_prep, save_prep
+
+
+def _pretty_hotkey(spec: str) -> str:
+    """'alt+r' -> 'Alt+R' (lo que se muestra y lo que entiende QKeySequence)."""
+    return "+".join(p.strip().capitalize() if len(p.strip()) > 1 else p.strip().upper()
+                    for p in (spec or "").split("+") if p.strip())
 
 
 class NotesWindow(QMainWindow):
@@ -85,6 +92,11 @@ class NotesWindow(QMainWindow):
         self.live_sig.discovery.connect(self._render_discovery)
         self.live_sig.attached.connect(self._attached)
         self.live_sig.recording.connect(self._recording_opened)
+        self.live_sig.hotkey.connect(self._answer_now)
+        self._hotkey = None  # listener global de COPILOT_HOTKEY mientras la ventana esta abierta
+        self._last_voice = 0.0  # aviso de silencio: ultima vez que se oyo a alguien
+        self._silence_warned = False
+        self._live_segments = 0
         self._opening: threading.Thread | None = None
         self._build()
         if self.prep.mode in MODES:
@@ -133,9 +145,13 @@ class NotesWindow(QMainWindow):
         self.btn_notes = QPushButton("✨ Generar notas")
         self.btn_notes.setEnabled(False)
         self.btn_open = QPushButton("Abrir carpeta")
+        self.btn_full = QPushButton("🎧 Transcribir audio")
+        self.btn_full.setToolTip("Vuelve a transcribir la grabacion completa (mas precisa que la de en vivo).\n"
+                                 "Sube todo el audio a Deepgram: gasta creditos por cada minuto grabado.")
+        self.btn_full.setEnabled(False)
         row2.addWidget(self.live)
         for b in (self.btn_rec, self.btn_stop, self.btn_audio, self.btn_text, self.btn_notes,
-                  self.btn_open):
+                  self.btn_full, self.btn_open):
             row2.addWidget(b)
         row2.addStretch(1)
         lay.addLayout(row2)
@@ -193,7 +209,8 @@ class NotesWindow(QMainWindow):
         cl.setContentsMargins(0, 0, 0, 0)
         head = QHBoxLayout()
         head.addStretch(1)
-        self.btn_answer = QPushButton("⚡ Responder ahora (F8)")
+        hk = _pretty_hotkey(self.cfg.COPILOT_HOTKEY)
+        self.btn_answer = QPushButton(f"⚡ Responder ahora (F8 / {hk})" if hk else "⚡ Responder ahora (F8)")
         self.btn_answer.setToolTip("Responde a lo ultimo que dijo el otro, aunque no parezca pregunta")
         self.btn_answer.setEnabled(False)
         head.addWidget(self.btn_answer)
@@ -237,6 +254,7 @@ class NotesWindow(QMainWindow):
         self.btn_text.clicked.connect(self._import_text)
         self.btn_notes.clicked.connect(self._generate)
         self.btn_open.clicked.connect(self._open_folder)
+        self.btn_full.clicked.connect(self._transcribe_full)
         self.btn_prep.clicked.connect(self._open_prep)
         self.btn_answer.clicked.connect(self._answer_now)
         self.on_top.toggled.connect(self._toggle_on_top)
@@ -315,6 +333,8 @@ class NotesWindow(QMainWindow):
         self._status("● Grabando" + (" en vivo" if self.live_notes else "")
                      + (f" ({' · '.join(devices)})" if devices else "")
                      + (f" — ⚠ {warn}" if warn else ""), error=bool(warn))
+        self._last_voice, self._silence_warned, self._live_segments = time.monotonic(), False, 0
+        self.btn_full.setEnabled(False)
         self._tick.start()
         self._refresh_banner()
 
@@ -357,7 +377,7 @@ class NotesWindow(QMainWindow):
             self.discovery = self._make_discovery(live.snapshot, self.cfg.DISCOVERY_INTERVAL)
             self.discovery.start()
 
-    def _stop_live(self) -> None:
+    def _stop_live(self) -> Transcript | None:
         live, self.live_notes = self.live_notes, None
         copilot, self.copilot = self.copilot, None
         discovery, self.discovery = self.discovery, None
@@ -373,12 +393,13 @@ class NotesWindow(QMainWindow):
         self.out_transcript.setReadOnly(False)
         self.btn_notes.setText("✨ Generar notas")
         if live is None:
-            return
+            return None
         tr = live.stop()
         if tr.segments:
             self._save("transcript_live.md", render(tr))
         if live.notes:
             self._save("notes_live.md", live.notes)
+        return tr
 
     def _live_stt(self):
         """En vivo: Whisper local con el modelo liviano (STT_LIVE_MODEL)."""
@@ -541,7 +562,7 @@ class NotesWindow(QMainWindow):
             guide = self.prep.guide_name or ("guia propia" if self.prep.guide.strip() else "sin guia")
             msg = (f"*Cuando el otro lado haga una pregunta, aqui aparece que responder, {brief} y "
                    f"{n} documentos. Guia: **{guide}**. Funciona grabando **En vivo**. "
-                   f"**F8** responde a lo ultimo que dijo.*")
+                   f"**F8**{self._hotkey_hint()} responde a lo ultimo que dijo.*")
         self.out_copilot.setMarkdown(msg)
 
     def _render_copilot(self, _answer=None) -> None:
@@ -558,6 +579,9 @@ class NotesWindow(QMainWindow):
     def _live_transcript(self, tr: Transcript) -> None:
         if not self.live_notes:
             return
+        if len(tr.segments) > self._live_segments:  # alguien dijo algo nuevo
+            self._live_segments = len(tr.segments)
+            self._heard_voice()
         bar = self.out_transcript.verticalScrollBar()
         at_end = bar.value() >= bar.maximum() - 4
         keep = bar.value()
@@ -613,6 +637,38 @@ class NotesWindow(QMainWindow):
         self.lbl_time.setText(f"{t // 60:02d}:{t % 60:02d}")
         self.me_level.setValue(min(100, int(self.recorder.levels["me"] * 600)))
         self.them_level.setValue(min(100, int(self.recorder.levels["them"] * 600)))
+        self._check_silence()
+
+    # Nivel (RMS) que cuenta como voz para el aviso de silencio. "Ellos" pasa por
+    # ganancia automatica (hasta x31): su ruido de fondo sube, por eso pide mas.
+    VOICE_LEVEL = {"me": 0.03, "them": 0.06}
+
+    def _check_silence(self) -> None:
+        """Aviso si llevas NOTES_SILENCE_WARN_MIN minutos grabando sin que nadie
+        hable (medido 2026-10-07: una practica quedo grabando 1 h 50 min y al
+        detener se subieron 1,3 GB de silencio a Deepgram)."""
+        now = time.monotonic()
+        if not self._last_voice:
+            self._last_voice = now
+        if not self.live_notes:  # sin En vivo no hay transcripcion: solo los niveles
+            if any(self.recorder.levels[w] > lvl for w, lvl in self.VOICE_LEVEL.items()):
+                self._last_voice = now
+        elif self.recorder.levels["me"] > self.VOICE_LEVEL["me"]:
+            self._last_voice = now
+        minutes = self.cfg.NOTES_SILENCE_WARN_MIN
+        if minutes <= 0 or self._silence_warned or now - self._last_voice < minutes * 60:
+            return
+        self._silence_warned = True
+        self._status(f"⚠ Llevas {minutes} min grabando sin que nadie hable. ¿Sigue la llamada? "
+                     "Si ya termino, pulsa ■ Detener.", error=True)
+        QApplication.alert(self)  # parpadea en la barra de tareas
+
+    def _heard_voice(self) -> None:
+        self._last_voice = time.monotonic()
+        if self._silence_warned:
+            self._silence_warned = False
+            self.lbl_status.setText("● Grabando")
+            self.lbl_status.setStyleSheet("")
 
     def _stop(self) -> None:
         if not self.recorder:
@@ -620,12 +676,40 @@ class NotesWindow(QMainWindow):
         self._tick.stop()
         folder = self.recorder.stop()
         self.recorder = None
-        self._stop_live()
+        live_tr = self._stop_live()
         self.btn_rec.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.live.setEnabled(True)
         self._refresh_banner()
-        self._run(lambda: load_any(folder, self._stt, self.sig.progress.emit), "transcript")
+        if live_tr is not None and live_tr.segments and not self.cfg.NOTES_FINAL_FROM_AUDIO:
+            # La de en vivo ya es la transcripcion: no se vuelve a subir la
+            # llamada entera (cada minuto grabado se pagaba dos veces).
+            self._show_transcript(live_tr)
+            if not self.cfg.NOTES_KEEP_AUDIO:
+                discard_recording_audio(folder)
+            self._status("Transcripcion final = la de en vivo (el audio no se volvio a subir). "
+                         "Para mas precision: 🎧 Transcribir audio.")
+            self._update_full_btn()
+            return
+        self._run(lambda: self._transcribe_recording(folder), "transcript")
+
+    def _has_audio(self) -> bool:
+        return bool(self.folder) and any((self.folder / n).exists() for n in ("me.wav", "them.wav"))
+
+    def _update_full_btn(self) -> None:
+        self.btn_full.setEnabled(not getattr(self, "_busy", False) and self.recorder is None and self._has_audio())
+
+    def _transcribe_full(self) -> None:
+        if self._has_audio() and not getattr(self, "_busy", False) and self.recorder is None:
+            folder = self.folder
+            self._run(lambda: self._transcribe_recording(folder), "transcript")
+
+    def _transcribe_recording(self, folder: Path) -> Transcript:
+        # Si la transcripcion falla, la excepcion sale antes de borrar: el audio se conserva.
+        tr = load_any(folder, self._stt, self.sig.progress.emit)
+        if not self.cfg.NOTES_KEEP_AUDIO:
+            discard_recording_audio(folder)
+        return tr
 
     # --- importar -------------------------------------------------------------
 
@@ -727,6 +811,7 @@ class NotesWindow(QMainWindow):
             b.setEnabled(not busy)
         if not busy:
             self.btn_notes.setEnabled(bool(self.out_transcript.toPlainText().strip()))
+        self._update_full_btn()
 
     def _save(self, name: str, text: str) -> bool:
         if not self.folder:
@@ -749,7 +834,52 @@ class NotesWindow(QMainWindow):
         target.mkdir(parents=True, exist_ok=True)
         os.startfile(str(target))
 
+    # --- atajo global ----------------------------------------------------------
+
+    def _hotkey_hint(self) -> str:
+        hk = _pretty_hotkey(self.cfg.COPILOT_HOTKEY)
+        if not hk:
+            return ""
+        return f" o **{hk}** (desde cualquier ventana)" if self._hotkey else f" o **{hk}**"
+
+    def _start_hotkey(self) -> None:
+        """COPILOT_HOTKEY global, con el mismo RegisterHotKey de SCREEN
+        (helper/hotkey.py). Si Windows no lo da (otra app lo tiene), queda como
+        atajo de esta ventana."""
+        spec = (self.cfg.COPILOT_HOTKEY or "").strip()
+        if not spec or self._hotkey is not None:
+            return
+        try:
+            from helper.hotkey import HotkeyError, HotkeyListener
+
+            listener = HotkeyListener(spec, self.live_sig.hotkey.emit)
+            listener.start()
+        except (ImportError, OSError, AttributeError) as exc:  # fuera de Windows o sin el modulo
+            self._local_hotkey(spec, f"atajo global no disponible ({exc})")
+            return
+        except HotkeyError as exc:
+            self._local_hotkey(spec, str(exc))
+            return
+        self._hotkey = listener
+        if not self.copilot:
+            self._copilot_idle()  # el aviso ya dice que funciona desde cualquier ventana
+
+    def _local_hotkey(self, spec: str, why: str) -> None:
+        if getattr(self, "_local_shortcut", None) is None:
+            self._local_shortcut = QShortcut(QKeySequence(_pretty_hotkey(spec)), self, activated=self._answer_now)
+        self._status(f"⚠ {_pretty_hotkey(spec)} solo funciona con esta ventana activa: {why}", error=True)
+
+    def _stop_hotkey(self) -> None:
+        listener, self._hotkey = self._hotkey, None
+        if listener is not None:
+            listener.stop()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._start_hotkey()
+
     def closeEvent(self, event) -> None:
+        self._stop_hotkey()
         if self._opening is not None:
             # Aun abriendo el audio: esperar a que termine para poder cerrarlo.
             self._opening.join(timeout=8)
