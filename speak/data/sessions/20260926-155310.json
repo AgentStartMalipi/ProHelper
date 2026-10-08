@@ -1,0 +1,33 @@
+{
+  "profile": {
+    "interview_type": "Mixta",
+    "role": "",
+    "company": "",
+    "seniority": "",
+    "candidate_info": "",
+    "job_description": "",
+    "cv": "",
+    "language": "en"
+  },
+  "history": [
+    {
+      "question": "Given an array, find a pair with sum k.",
+      "qtype": "CODING",
+      "answer": "Then I would use two pointers from both ends.",
+      "clarifications": [
+        [
+          "Can I assume the array is sorted?",
+          "Yes, you can assume it's sorted."
+        ]
+      ],
+      "feedback": "Score: 3/5\n- ok",
+      "model_answer": "QUICK ANSWER\n- sort first\n\nDETAILED ANSWER\n**Approach** two pointers",
+      "score": "3/5",
+      "at": 1790455990.9918892
+    }
+  ],
+  "topics": {
+    "array": 1,
+    "two pointers": 1
+  }
+}

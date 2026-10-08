@@ -1,0 +1,25 @@
+{
+  "profile": {
+    "interview_type": "Mixta",
+    "role": "",
+    "company": "",
+    "seniority": "",
+    "candidate_info": "",
+    "job_description": "",
+    "cv": "",
+    "language": "en"
+  },
+  "history": [
+    {
+      "question": "Hi, thanks for joining me today for this practice interview. To start, can you walk me through a challenging project you worked on and what your specific role was in it?",
+      "qtype": "BEHAVIORAL",
+      "answer": "Yes. So, my... I had a... We're going to do a new song. I had a hackathon.",
+      "clarifications": [],
+      "feedback": "Score: 1/5\n\n**What worked:**\n- You attempted to anchor the answer in a real example (a hackathon) rather than speaking abstractly — that's the right instinct.\n\n**What was missing or weak:**\n- The answer is essentially incomplete/incoherent — \"We're going to do a new song. I had a hackathon\" gives no situation, task, action, or result.\n- No mention of your specific role — the interviewer explicitly asked for this and it's completely absent.\n- No structure at all (no STAR), so the listener can't follow what happened, what the challenge was, or what you did about it.\n- No outcome or quantified result — nothing to show impact or success.",
+      "model_answer": "QUICK ANSWER\n- Name the project in one sentence (Situation).\n- State the specific challenge/goal (Task).\n- Say \"My role was...\" explicitly.\n- List 2-3 concrete actions YOU took.\n- End with a measurable result.\n- Optional: tie it to a skill/value shown.\n\nDETAILED ANSWER\n**Situation:** I took part in a 24-hour hackathon [assumption: company or university-organized] where teams had to build a working product prototype from scratch, including a demo, in a very short time.\n\n**Task:** My role was [assumption: e.g., lead developer / product owner] on a team of [assumption: 4 people], and the challenge was that we had almost no time to align on an idea, split the work, and get something functional to present by the deadline.\n\n**Action:** I proposed we spend the first hour just scoping a simple, achievable idea instead of an overly ambitious one, so we wouldn't run out of time. I took ownership of [assumption: the core feature/backend], coordinated with teammates on integration points every few hours to avoid last-minute surprises, and when we hit a blocker [assumption: a broken API integration] with only a few hours left, I made the call to simplify the feature rather than risk not finishing at all.\n\n**Result:** We delivered a working demo on time, [assumption: placed in the top 3 / received positive feedback from judges], and I learned how valuable early scoping and clear ownership are under tight deadlines.\n\n**Principle demonstrated:** This shows ownership and delivering results under pressure/time constraints.",
+      "score": "1/5",
+      "at": 1790812438.2642448
+    }
+  ],
+  "topics": {}
+}

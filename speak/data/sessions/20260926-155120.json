@@ -1,0 +1,27 @@
+{
+  "profile": {
+    "interview_type": "Mixta",
+    "role": "",
+    "company": "",
+    "seniority": "",
+    "candidate_info": "",
+    "job_description": "",
+    "cv": "",
+    "language": "en"
+  },
+  "history": [
+    {
+      "question": "What is a hash map?",
+      "qtype": "TECHNICAL_CONCEPT",
+      "answer": "I think I would use a hash map",
+      "clarifications": [],
+      "feedback": "Score: 3/5\n- ok",
+      "model_answer": "QUICK ANSWER\n- sort first\n\nDETAILED ANSWER\n**Approach** two pointers",
+      "score": "3/5",
+      "at": 1790455880.9712298
+    }
+  ],
+  "topics": {
+    "hash map": 2
+  }
+}

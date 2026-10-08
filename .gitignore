@@ -6,8 +6,11 @@
 speak/.env
 .env
 
-# Datos personales: grabaciones, transcripciones, sesiones, perfil/CV, logs
-speak/data/
+# Datos personales (el repo es PRIVADO, verificado 2026-10-08): se suben respuestas, brief,
+# perfiles, transcripciones y notas. Nunca los audios (pesan GB y pasan el limite de GitHub)
+# ni la cache de documentos.
+speak/data/**/*.wav
+speak/data/kb_cache.json
 *.log
 
 # Python

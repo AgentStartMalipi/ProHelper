@@ -1,0 +1,28 @@
+{
+  "profile": {
+    "interview_type": "Mixta",
+    "role": "",
+    "company": "",
+    "seniority": "",
+    "candidate_info": "",
+    "job_description": "",
+    "cv": "",
+    "language": "en"
+  },
+  "history": [
+    {
+      "question": "Given an array of integers, find two numbers that add up to a target.",
+      "qtype": "CODING",
+      "answer": "I would sort the array and use two pointers.",
+      "clarifications": [],
+      "feedback": "Score: 3/5\n- ok",
+      "model_answer": "QUICK ANSWER\n- sort first\n\nDETAILED ANSWER\n**Approach** two pointers",
+      "score": "3/5",
+      "at": 1790451794.5228276
+    }
+  ],
+  "topics": {
+    "array": 2,
+    "two pointers": 1
+  }
+}
