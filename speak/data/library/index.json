@@ -1,0 +1,14 @@
+{
+  "interviews": [
+    {
+      "id": "docplanner",
+      "label": "Docplanner",
+      "dir": "library/docplanner"
+    },
+    {
+      "id": "cern",
+      "label": "CERN",
+      "dir": "library/cern"
+    }
+  ]
+}
