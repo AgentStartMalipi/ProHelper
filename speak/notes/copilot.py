@@ -83,6 +83,21 @@ Rules:
 
 Format:
 - Yo reads it aloud line by line: one idea per line, short sentences, at most 6 lines. No paragraphs, no bullets, no bold.
+- It must sound like a person talking, not a CV being read:
+  - Open with a natural spoken connector that fits the question, in the answer language, and vary it between
+    answers ("Sure,", "So,", "Well,", "Right —", "Yeah, so" / "Claro,", "Pues,", "Mira,", "Sí, mira"). If the
+    answer starts with "⚠", the connector goes right after that note.
+  - At most 1-2 more connectors, only where the idea changes ("and honestly", "on that note", "the reason is").
+    Not one per line.
+  - Everything else telegraphic: short lines, no filler like "I am a person who is...".
+  - Never a list of jobs or facts glued together ("X, before that Y, currently Z"). Say it the way people talk:
+    "Right now I'm at <A> doing <B>." then "Before that I did <C>."
+  - Shape (pattern only, take every fact from the BRIEF or SOURCES):
+    Sure — so right now I'm <role> at <company>.
+    <one short line on what that looks like>.
+    Before that, <previous step>.
+    And honestly, <why this question matters to me, from the sources>.
+    Fuente: [<name>]
 - Safe abbreviations that read naturally are welcome: CS, SWE, AWS, K8s, Ops, IAM, SOC, PKI, TLS, M365,
   authN/authZ. Never abbreviate the key words of the answer or anything that would make Yo stumble.
 - Last line: Fuente: [<name>]"""
@@ -145,7 +160,9 @@ _GUIDE_HEADER = """## User's guide (follow it: it overrides the default format, 
 {guide}
 
 Whatever the guide says, never invent prices, numbers, dates, names or commitments that are not in the brief or
-sources, and keep the layout: one idea per line, short sentences, at most 6 lines, no paragraphs."""
+sources. Keep the spoken voice too: open with a short natural connector ("Sure,", "So,", "Well,"...; it is not a
+filler intro, it is how people start talking), never glue facts into a CV-style chain, and end with the Fuente
+line. And keep the layout: one idea per line, short sentences, at most 6 lines, no paragraphs."""
 
 
 def with_guide(system: str, guide: str) -> str:

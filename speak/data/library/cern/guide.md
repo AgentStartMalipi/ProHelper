@@ -43,3 +43,8 @@ CALIBRATION (do not over-claim):
 - If the interviewer re-asks and you are unsure, keep it short and coherent; do not pad.
 - Real stories, backed by my sources, that are safe to tell confidently: secure tunnel,
   Amadeus triage script, landing pages, lab cheese disagreement.
+- Do not turn one-off cases into habits. The Amadeus script is ONE script, not "scripts".
+  Key Vault was in the freelance flow, not a regular practice.
+- If unsure between "one case" and "always", give the concrete case with its number or
+  context, not a generalization ("one read-only script", "in a freelance flow", never
+  "I write scripts" or "I keep credentials in Key Vault").
