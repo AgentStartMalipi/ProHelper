@@ -494,6 +494,29 @@ class PrewarmTests(unittest.TestCase):
         self.assertEqual(spawned[1].system, "guia nueva")
         client.close()
 
+    def test_long_system_prompt_is_prewarmed_too(self):
+        # Medido 2026-10-08: con una guia de ~21.000 caracteres no se
+        # pre-arrancaba y cada respuesta arrancaba en frio (2,6-14 s).
+        import os
+
+        client, spawned = self.make()
+        files = []
+        orig = client._spawn
+
+        def spawn(system, json_input, system_file=None):
+            files.append(system_file)
+            return orig(system, json_input, system_file)
+        client._spawn = spawn
+        long_system = "x" * (client.MAX_ARG_SYSTEM + 10)
+        client.warm(long_system)
+        self.assertTrue(wait_for(lambda: client._warm is not None))
+        warm = spawned[0]
+        self.assertTrue(files[0] and os.path.exists(files[0]))  # el archivo vive mientras espera
+        self.assertEqual("".join(client.stream(long_system, "pregunta")), "hola")
+        self.assertIn('"pregunta"', warm.stdin.getvalue())  # uso el pre-arrancado
+        self.assertFalse(os.path.exists(files[0]))  # y su archivo se borro al terminar
+        client.close()
+
 
 class RewriteLogTests(unittest.TestCase):
     def test_stop_mid_rewrite_keeps_last_complete_answer(self):

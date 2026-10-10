@@ -146,6 +146,26 @@ class Config:
     KB_DIR: str = ""
     # Silencio (s) del otro para dar su pregunta por terminada.
     COPILOT_QUIET_S: float = 1.2
+    # --- Latencia del copiloto (medido 2026-10-08: 6-7 s de fin de pregunta a
+    # respuesta; ver speak.log, lineas "copiloto: latencia ...") ---
+    # Mantener un `claude` ya arrancado tambien con guias largas (>8000 car.).
+    COPILOT_PREWARM: bool = True
+    # Si la pregunta coincide casi exactamente con una respuesta preparada
+    # ("## clave - pregunta" en la preparacion), se muestra al instante como
+    # MEMORIA, encima de la del LLM (AL VUELO). Si no, solo AL VUELO.
+    COPILOT_INSTANT: bool = True
+    # Fraccion de las palabras clave del titulo que trae la pregunta...
+    COPILOT_INSTANT_MIN_SCORE: float = 0.9
+    # ...y de las de la ultima frase de la pregunta que estan en el titulo.
+    COPILOT_INSTANT_MIN_PRECISION: float = 0.75
+    # Segundos maximos hasta el PRIMER texto de AL VUELO (la del LLM). Si no
+    # llega, queda solo MEMORIA y la vista deja de esperar. 0 = sin limite.
+    # Medido en speak.log (63 respuestas): primer texto ~1,5 s con el CLI
+    # pre-arrancado; respuesta completa mediana 6,7 s, p95 11 s.
+    COPILOT_LIVE_TIMEOUT_S: float = 8.0
+    # Si la pregunta ya cerro con "?", responder tras estos s de silencio en vez
+    # de COPILOT_QUIET_S (especulativo: si el otro sigue, se rehace). 0 = apagado.
+    COPILOT_EAGER_S: float = 0.5
     # Exploracion ("¿que me falta?") en vivo: cada cuantos segundos se
     # reescribe si hubo conversacion nueva. 0 = solo con el boton (F9).
     DISCOVERY_INTERVAL: int = 90

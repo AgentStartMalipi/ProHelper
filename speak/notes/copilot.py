@@ -82,9 +82,10 @@ Rules:
 - Short: this is read during a live conversation. At most ~80 words.
 
 Format:
-**Respuesta:** one or two sentences Yo can say as-is.
-- up to 3 bullets with supporting facts, numbers or next step
-Fuente: [<name>]"""
+- Yo reads it aloud line by line: one idea per line, short sentences, at most 6 lines. No paragraphs, no bullets, no bold.
+- Safe abbreviations that read naturally are welcome: CS, SWE, AWS, K8s, Ops, IAM, SOC, PKI, TLS, M365,
+  authN/authZ. Never abbreviate the key words of the answer or anything that would make Yo stumble.
+- Last line: Fuente: [<name>]"""
 
 
 # --- guia --------------------------------------------------------------------
@@ -144,7 +145,7 @@ _GUIDE_HEADER = """## User's guide (follow it: it overrides the default format, 
 {guide}
 
 Whatever the guide says, never invent prices, numbers, dates, names or commitments that are not in the brief or
-sources."""
+sources, and keep the layout: one idea per line, short sentences, at most 6 lines, no paragraphs."""
 
 
 def with_guide(system: str, guide: str) -> str:
@@ -604,6 +605,10 @@ class Answer:
     done: bool = False
     forced: bool = False
     last_done: str = ""  # la ultima respuesta completa, por si la reescritura no termina
+    instant: str = ""  # respuesta preparada mostrada al instante (ver notes/instant.py)
+    instant_key: str = ""
+    trigger_lag: float = 0.0  # s desde que el otro termino de hablar hasta disparar
+    timed_out: bool = False  # el LLM no escribio nada a tiempo (ver Copilot.live_timeout_s)
 
 
 @dataclass
@@ -625,7 +630,18 @@ class Copilot:
                  on_answer: Callable[[Answer], None] = lambda a: None,
                  on_status: Callable[[str], None] = lambda m: None,
                  guide: Callable[[], str] | str = "",
-                 quiet_s: float = 1.2, incomplete_quiet_s: float = 3.0, min_words: int = 3) -> None:
+                 quiet_s: float = 1.2, incomplete_quiet_s: float = 3.0, min_words: int = 3,
+                 eager_s: float = 0.0, instant: Callable[[str], object] | None = None,
+                 live_timeout_s: float = 0.0) -> None:
+        # live_timeout_s > 0: si en ese tiempo el LLM no escribio nada, AL VUELO
+        # se da por perdida (queda MEMORIA, si la hay) y la vista deja de esperar.
+        self.live_timeout_s = live_timeout_s
+        # eager_s > 0: una pregunta que ya cerro con "?" se responde tras
+        # eager_s de silencio en vez de quiet_s (si el otro sigue, se rehace).
+        # instant(pregunta) -> notes.instant.Match o None: respuesta preparada
+        # que se muestra al instante mientras el LLM escribe.
+        self.eager_s = eager_s
+        self.instant = instant
         self.llm = llm
         self.kb = kb
         self._brief = brief if callable(brief) else (lambda b=brief: b)
@@ -750,7 +766,12 @@ class Copilot:
         # Si ya empezaste a responder ("buena pregunta, dejame ver..."), no se
         # espera el silencio: justo ahi es cuando mas sirve la ayuda.
         me_after = any(a >= q.end - 0.2 for a, _ in self._intervals(ME, tr))
-        wait = self.incomplete_quiet_s if seems_unfinished(q.text) else self.quiet_s
+        unfinished = seems_unfinished(q.text)
+        wait = self.incomplete_quiet_s if unfinished else self.quiet_s
+        if self.eager_s > 0 and not unfinished and q.text.rstrip().endswith("?"):
+            # Especulativo: la pregunta ya cerro. Si el otro sigue hablando,
+            # `_answer` cancela esta y la rehace con la pregunta completa.
+            wait = min(wait, self.eager_s)
         if not me_after and self.now() - q.end < wait:
             return None
         return self._answer(q, tr)
@@ -773,27 +794,67 @@ class Copilot:
                 if prev.done and prev.text:
                     ans.last_done = prev.text
                 ans.question, ans.text, ans.done, ans.forced = q.text, "", False, forced
+                ans.timed_out = False
             else:
                 ans = Answer(len(self.answers) + 1, q.start, q.text, forced=forced)
                 self.answers.append(ans)
             self._cancels[ans.id] = cancel
             self._cancel = cancel
+            ans.trigger_lag = max(0.0, self.now() - q.end)
+            ans.instant, ans.instant_key = self._instant_for(q.text)
+        if ans.instant:
+            self.on_answer(ans)  # la preparada (MEMORIA) se ve ya; la del LLM (AL VUELO) llega despues
         threading.Thread(target=self._generate, args=(ans, tr, cancel), name="speak-copilot-llm",
                          daemon=True).start()
         return ans
 
+    def _instant_for(self, question: str) -> tuple[str, str]:
+        if self.instant is None:
+            return "", ""
+        try:
+            m = self.instant(question)
+        except Exception:
+            log.exception("copiloto: respuesta preparada")  # sin atajo, sigue el LLM
+            return "", ""
+        return (m.text, m.key) if m else ("", "")
+
     def _generate(self, ans: Answer, tr: Transcript, cancel: threading.Event) -> None:
+        t_start = time.time()
         recent = render(tr)[-RECENT_CHARS:]
         sources = "(no documents loaded)"
         if self.kb is not None and self.kb.chunks:
             sources = format_sources(copilot_sources(self.kb, ans.question, recent))
+        t_search = time.time()
         system, user = answer_prompt(ans.question, self._brief(), sources, recent, self.mode, self._guide())
         acc = ""
-        t0 = time.time()
+        first: float | None = None
+        guard = threading.Lock()  # el primer trozo y el timeout no pueden cruzarse
+
+        def expire() -> None:
+            # Corre en su propio hilo: el del LLM puede seguir bloqueado leyendo
+            # al CLI. Se da AL VUELO por perdida y se refresca la vista ya.
+            with guard:
+                if first is not None or cancel.is_set():
+                    return
+                cancel.set()  # lo que llegue despues se descarta
+                ans.timed_out, ans.done = True, True
+            log.info("copiloto: AL VUELO sin texto tras %.1fs (preparada %s)",
+                     self.live_timeout_s, ans.instant_key or "-")
+            self.on_answer(ans)
+
+        timer = threading.Timer(self.live_timeout_s, expire) if self.live_timeout_s > 0 else None
+        if timer:
+            timer.daemon = True
+            timer.start()
         try:
             for chunk in self.llm.stream(system, user, cancel):
-                if cancel.is_set():
-                    return
+                with guard:
+                    if cancel.is_set():
+                        return
+                    if first is None and chunk:
+                        first = time.time()
+                if timer and first is not None:
+                    timer.cancel()
                 acc += chunk
                 ans.text = acc
                 self.on_answer(ans)
@@ -801,16 +862,27 @@ class Copilot:
             log.exception("copiloto: respuesta")
             self.on_status(f"copiloto: {exc}")
             return
+        finally:
+            if timer:
+                timer.cancel()
         if cancel.is_set():
             return
         ans.text, ans.done = acc.strip(), True
-        log.info("copiloto: respuesta en %.1fs", time.time() - t0)
+        end = time.time()
+        # Metricas por respuesta: de donde sale cada segundo.
+        log.info("copiloto: latencia fin_pregunta->disparo %.1fs | busqueda %d ms | primer texto %.1fs | "
+                 "total %.1fs | preparada %s | %d palabras",
+                 ans.trigger_lag, (t_search - t_start) * 1000, (first or end) - t_start, end - t_start,
+                 ans.instant_key or "-", len(acc.split()))
+        log.info("copiloto: respuesta en %.1fs", end - t_start)
         self.on_answer(ans)
 
     @staticmethod
     def _final_text(a: Answer) -> str:
         """Lo que queda guardado: si la llamada se detuvo mientras se
         reescribia, la ultima respuesta completa y no el trozo a medias."""
+        if a.timed_out and not a.text:
+            return a.instant or "_(sin respuesta: el LLM tardo demasiado)_"
         if a.done or not a.last_done:
             return a.text
         return f"{a.last_done}\n\n_(respuesta anterior: la nueva no alcanzo a terminar)_"

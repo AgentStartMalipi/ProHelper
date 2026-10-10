@@ -16,6 +16,7 @@ documentos o diagramas en cualquier momento, tambien en plena llamada.
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -45,12 +46,32 @@ from ..knowledge import IMAGE_EXT, SUPPORTED, KnowledgeBase
 from ..llm_client import make_llm
 from ..notes.analyzer import MODES, generate_notes, heuristic_report, me_share
 from ..notes.copilot import COPILOT_MODES, Copilot, Discovery, PrepSession, attach_file
+from ..notes.instant import PreparedIndex
 from ..notes.pipeline import (ME, THEM, Transcript, _fmt, discard_recording_audio, load_any,
                               parse_transcript_text, render)
 from ..transcriber import FasterWhisperSTT, make_stt
 from .banner import ModeBanner
 from .bridge import LiveSignals, TaskSignals
-from .prep_window import PasteDialog, PrepWindow, load_prep, save_prep
+from .prep_window import PasteDialog, PrepWindow, active_label, load_prep, save_prep
+
+
+def _reading_lines(text: str, reflow: bool = False) -> list[str]:
+    """Una idea por linea, para leer en voz alta. Si ya viene en lineas (el LLM)
+    se respetan; un parrafo se parte por frases. `reflow`: unir siempre y partir
+    por frases (la preparada viene cortada a ~90 columnas, a mitad de frase)."""
+    text = re.sub(r"\*\*Respuesta:\*\*\s*", "", text or "")
+    lines = [re.sub(r"^\s*(?:[-*•]|\d+[.)])\s+", "", ln).strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]
+    if reflow or len(lines) <= 1:
+        lines = re.split(r"(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÑ¿¡\"(\[⚠])", " ".join(lines))
+    return [ln.strip() for ln in lines if ln.strip()]
+
+
+def _answer_block(title: str, key: str, text: str, purpose: str, reflow: bool = False) -> str:
+    head = f"**{title}**" + (f" · `{key}`" if key else "")
+    lines = _reading_lines(text, reflow) or ["…"]
+    # "  \n" = salto de linea dentro del mismo bloque (sin parrafos)
+    return f"{head}  \n" + "  \n".join(lines) + f"  \n*{purpose}*"
 
 
 def _pretty_hotkey(spec: str) -> str:
@@ -127,6 +148,8 @@ class NotesWindow(QMainWindow):
         self.btn_prep = QPushButton("🧭 Preparar llamada")
         self.btn_prep.setToolTip("Mini chat previo: de que va la reunion, que estudiar, y un brief para el copiloto")
         self.on_top = QCheckBox("📌 Siempre visible")
+        self.lbl_interview = QLabel()  # entrevista activa (data/library); vacio si no hay
+        row.addWidget(self.lbl_interview)
         row.addWidget(self.btn_prep)
         row.addWidget(self.on_top)
         lay.addLayout(row)
@@ -247,6 +270,7 @@ class NotesWindow(QMainWindow):
         self._copilot_idle()
         self._discovery_idle()
         self._show_docs()
+        self._show_interview()
 
         self.btn_rec.clicked.connect(self._record)
         self.btn_stop.clicked.connect(self._stop)
@@ -365,12 +389,14 @@ class NotesWindow(QMainWindow):
         if self.cfg.COPILOT_ENABLED:
             live = self.live_notes
             self.copilot = Copilot(
-                make_llm(self.cfg, prewarm=True), self.kb, brief=lambda: self.prep.brief,
+                make_llm(self.cfg, prewarm=self.cfg.COPILOT_PREWARM), self.kb, brief=lambda: self.prep.brief,
                 snapshot=live.snapshot, now=live.now, pending=lambda: live.pending(THEM),
                 speech=live.speech,
                 mode=self.mode.currentText(), on_answer=self.live_sig.answer.emit,
                 on_status=self.live_sig.status.emit, guide=lambda: self.prep.guide,
-                quiet_s=self.cfg.COPILOT_QUIET_S)
+                quiet_s=self.cfg.COPILOT_QUIET_S, eager_s=self.cfg.COPILOT_EAGER_S,
+                instant=self._instant_matcher() if self.cfg.COPILOT_INSTANT else None,
+                live_timeout_s=self.cfg.COPILOT_LIVE_TIMEOUT_S)
             self.copilot.start()
             self.btn_answer.setEnabled(True)
             self._copilot_idle()
@@ -532,9 +558,18 @@ class NotesWindow(QMainWindow):
         if self.discovery and "Anadido" in msg:
             self.discovery.run_now()  # informacion nueva: ¿que cambia?
 
+    def _show_interview(self) -> None:
+        label = active_label()
+        self.lbl_interview.setText(f"Entrevista: <b>{label}</b>" if label else "")
+
+    def _interview_changed(self) -> None:
+        self._show_docs()
+        self._show_interview()
+
     def _open_prep(self) -> None:
         if self.prep_window is None:
-            self.prep_window = PrepWindow(self.cfg, self.prep, self.mode, on_interview_changed=self._show_docs)
+            self.prep_window = PrepWindow(self.cfg, self.prep, self.mode,
+                                          on_interview_changed=self._interview_changed)
         self.prep_window.show()
         self.prep_window.raise_()
         self.prep_window.activateWindow()
@@ -565,14 +600,33 @@ class NotesWindow(QMainWindow):
                    f"**F8**{self._hotkey_hint()} responde a lo ultimo que dijo.*")
         self.out_copilot.setMarkdown(msg)
 
+    def _instant_matcher(self):
+        """Respuestas preparadas al instante, con los textos de la preparacion
+        tal como esten al preguntar (si pegas uno a mitad de llamada, cuenta)."""
+        def match(question: str):
+            index = PreparedIndex(self.kb.extra_texts(), min_score=self.cfg.COPILOT_INSTANT_MIN_SCORE,
+                                  min_precision=self.cfg.COPILOT_INSTANT_MIN_PRECISION)
+            return index.match(question)
+        return match
+
     def _render_copilot(self, _answer=None) -> None:
         if not self.copilot:
             return
         parts = []
         for a in reversed(self.copilot.answers[-15:]):
             state = "" if a.done else " ⏳"
-            parts.append(f"**[{_fmt(a.at)}] ❓ {a.question}**{state}\n\n"
-                         f"{a.text or '…'}")
+            # AL VUELO (la del LLM) siempre; MEMORIA (la preparada) encima, solo
+            # si la pregunta coincide casi exactamente con un titulo preparado.
+            blocks = [_answer_block("🎯 AL VUELO", "", a.text, "léela; cubre lo que la memoria no capta")]
+            if a.timed_out and not a.text:
+                # El LLM no llego a tiempo: solo MEMORIA; sin ella, un aviso.
+                blocks = [] if a.instant else ["*⌛ AL VUELO no llegó a tiempo. F8 para reintentar.*"]
+            if a.instant:
+                blocks.insert(0, _answer_block("🧠 MEMORIA", a.instant_key, a.instant,
+                                               "para arrancar de memoria si la pregunta es idéntica",
+                                               reflow=True))
+            body = "\n\n&nbsp;\n\n".join(blocks)  # linea en blanco visible entre las dos
+            parts.append(f"**[{_fmt(a.at)}] ❓ {a.question}**{state}\n\n{body}")
         self.out_copilot.setMarkdown("\n\n---\n\n".join(parts))
         self.out_copilot.verticalScrollBar().setValue(0)
 

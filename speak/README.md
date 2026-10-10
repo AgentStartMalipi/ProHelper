@@ -159,7 +159,7 @@ Tres piezas:
    la fuente. Si no está en tus fuentes lo dice (⚠) y propone una salida
    segura; no inventa precios, cifras ni compromisos. Medido con
    `claude-sonnet-5`: primer texto ~3 s, respuesta completa ~6-7 s.
-   **⚡ Responder ahora (F8 o Alt+R)** responde a lo último que dijo el otro aunque no
+   Cada respuesta deja en `speak.log` una línea `copiloto: latencia fin_pregunta->disparo … | busqueda … | primer texto … | total … | preparada …` para ver de dónde sale cada segundo. **⚡ Responder ahora (F8 o Alt+R)** responde a lo último que dijo el otro aunque no
    parezca pregunta. F8 funciona con la ventana de SPEAK activa; **Alt+R**
    (`COPILOT_HOTKEY`) es global: funciona aunque estés en Teams o Meet, con el
    mismo `RegisterHotKey` de SCREEN. Si otra app ya lo tiene, queda solo para
@@ -260,6 +260,12 @@ Por consola:
 | `NOTES_SILENCE_WARN_MIN` | minutos grabando sin que nadie hable antes de avisar (5; la ventana parpadea en la barra de tareas). `0` = sin aviso |
 | `NOTES_KEEP_AUDIO` | `true` (de serie) guarda `me.wav` y `them.wav` de cada llamada. `false` = se borran al terminar la transcripción final (quedan transcripción y notas); si la transcripción falla, el audio se conserva |
 | `COPILOT_ENABLED` | copiloto en vivo (`true`) |
+| `COPILOT_PREWARM` | `true`: deja un `claude` ya arrancado esperando la siguiente pregunta, también con guías largas (system prompt por archivo). Medido: primer texto 2,6 s → 1,6 s de mediana y sin picos de 14 s |
+| `COPILOT_INSTANT` | `true`: si la pregunta coincide casi exactamente con una respuesta preparada (`## clave - pregunta \| otra forma` en los textos de la preparación), se muestra **al instante** como 🧠 MEMORIA, encima de 🎯 AL VUELO (la de Claude, ajustada a la conversación). Ambas, una idea por línea para leer en voz alta. Índice en memoria por palabras clave, sin servicios externos |
+| `COPILOT_INSTANT_MIN_SCORE` | fracción de las palabras clave del título que trae la pregunta (0.9). Además pide 2 palabras clave en común (1 si el título solo tiene una) |
+| `COPILOT_INSTANT_MIN_PRECISION` | fracción de las palabras clave de la última frase de la pregunta que están en el título (0.75): la pregunta no puede traer mucho más que el título |
+| `COPILOT_LIVE_TIMEOUT_S` | segundos máximos hasta el primer texto de AL VUELO (8). Si no llega, queda solo MEMORIA (o un aviso, F8 reintenta) y la vista deja de esperar. `0` = sin límite |
+| `COPILOT_EAGER_S` | si la pregunta ya cerró con "?", responde tras estos segundos de silencio en vez de `COPILOT_QUIET_S` (0.5). Si el otro sigue hablando, la respuesta se rehace. `0` = apagado |
 | `COPILOT_HOTKEY` | atajo global de "Responder ahora" (`alt+r`; vacío = sin atajo global). SCREEN usa `ctrl+shift+c`, `alt+2`..`alt+5`, `alt+e`, `alt+f` |
 | `KB_DIR` | carpeta de conocimiento; vacío = `speak/data/knowledge`. También se elige en Preparar llamada |
 | `COPILOT_QUIET_S` | segundos de silencio del otro para dar su pregunta por terminada (1.2) |

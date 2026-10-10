@@ -102,6 +102,30 @@ def _discard(proc: subprocess.Popen) -> None:
             pass
 
 
+def _discard_warm(proc: subprocess.Popen, system_file: str | None) -> None:
+    _discard(proc)
+    _remove(system_file)
+
+
+def _write_system_file(system: str) -> str:
+    """System prompt largo a un archivo temporal (Windows corta la linea de
+    comandos en 32.767 caracteres)."""
+    import tempfile
+
+    fd, path = tempfile.mkstemp(prefix="speak-system-", suffix=".txt")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(system)
+    return path
+
+
+def _remove(path: str | None) -> None:
+    if path:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass  # en Windows, si el proceso aun lo tiene abierto, queda en %TEMP%
+
+
 class ClaudeCLIClient(LLMClient):
     """`prewarm=True` (el copiloto): siempre hay un `claude` ya arrancado
     esperando la proxima pregunta. Arrancar el proceso es ~1,2 s del primer
@@ -115,7 +139,9 @@ class ClaudeCLIClient(LLMClient):
         self.effort = effort
         self.timeout = timeout
         self.prewarm = prewarm
-        self._warm: tuple[str, subprocess.Popen] | None = None
+        # (system, proceso, archivo con el system o None). Con un system largo
+        # el archivo vive mientras el proceso espera y se borra al usarlo.
+        self._warm: tuple[str, subprocess.Popen, str | None] | None = None
         self._warm_lock = threading.Lock()
         if prewarm:
             # En Windows el hijo no muere con el padre: sin esto quedaria un
@@ -152,33 +178,38 @@ class ClaudeCLIClient(LLMClient):
             creationflags=_NO_WINDOW,
         )
 
-    def _take_warm(self, system: str) -> subprocess.Popen | None:
+    def _take_warm(self, system: str) -> tuple[subprocess.Popen, str | None] | None:
         with self._warm_lock:
             warm, self._warm = self._warm, None
         if warm is None:
             return None
-        sys_prompt, proc = warm
+        sys_prompt, proc, system_file = warm
         if sys_prompt == system and proc.poll() is None:
-            return proc
-        _discard(proc)  # otro system prompt (cambiaste la guia o el modo) o murio
+            return proc, system_file
+        _discard_warm(proc, system_file)  # otro system prompt (cambiaste la guia o el modo) o murio
         return None
 
     def warm(self, system: str) -> None:
-        # Un prompt de sistema largo va por archivo temporal (ver stream): no se
-        # pre-arranca, porque el archivo tendria que vivir mientras el proceso espera.
-        if not self.prewarm or len(system) > self.MAX_ARG_SYSTEM:
+        """Deja un `claude` arrancado con este system prompt. Medido 2026-10-08:
+        con la guia de una entrevista (~21.000 caracteres, mas que
+        MAX_ARG_SYSTEM) antes NO se pre-arrancaba y cada respuesta arrancaba en
+        frio: primer texto 2,6-14 s. Un system largo va por archivo, que vive
+        mientras el proceso espera."""
+        if not self.prewarm:
             return
 
         def spawn():
+            system_file = _write_system_file(system) if len(system) > self.MAX_ARG_SYSTEM else None
             try:
-                proc = self._spawn(system, json_input=True)
+                proc = self._spawn(system, json_input=True, system_file=system_file)
             except Exception as exc:
                 log.warning("no pude pre-arrancar claude: %s", exc)
+                _remove(system_file)
                 return
             with self._warm_lock:
-                old, self._warm = self._warm, (system, proc)
+                old, self._warm = self._warm, (system, proc, system_file)
             if old is not None:
-                _discard(old[1])
+                _discard_warm(old[1], old[2])
 
         threading.Thread(target=spawn, name="speak-llm-warm", daemon=True).start()
 
@@ -186,31 +217,32 @@ class ClaudeCLIClient(LLMClient):
         with self._warm_lock:
             warm, self._warm = self._warm, None
         if warm is not None:
-            _discard(warm[1])
+            _discard_warm(warm[1], warm[2])
 
     def stream(self, system, prompt, cancel=None, images=None):
-        system_file = None
-        if len(system) > self.MAX_ARG_SYSTEM:
-            import tempfile
-
-            fd, system_file = tempfile.mkstemp(prefix="speak-system-", suffix=".txt")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(system)
+        files: list[str] = []  # archivos de system a borrar al terminar (propio o del pre-arrancado)
         try:
-            yield from self._stream(system, prompt, images, system_file, cancel)
+            yield from self._stream(system, prompt, images, files, cancel)
         finally:
-            if system_file:
-                try:
-                    os.unlink(system_file)
-                except OSError:
-                    pass
+            for f in files:
+                _remove(f)
 
-    def _stream(self, system, prompt, images, system_file, cancel):
-        use_warm = self.prewarm and system_file is None
-        proc = self._take_warm(system) if use_warm else None
+    def _stream(self, system, prompt, images, files, cancel):
+        use_warm = self.prewarm
+        warm = self._take_warm(system) if use_warm else None
         json_input = bool(images) or use_warm
-        if proc is None:
+        if warm is not None:
+            proc, warm_file = warm
+            if warm_file:
+                files.append(warm_file)
+            log.debug("claude: proceso pre-arrancado")
+        else:
+            system_file = _write_system_file(system) if len(system) > self.MAX_ARG_SYSTEM else None
+            if system_file:
+                files.append(system_file)
             proc = self._spawn(system, json_input, system_file)
+            if use_warm:
+                log.info("claude: sin proceso pre-arrancado, arranque en frio")
         payload = user_message_json(prompt, images or []) + "\n" if json_input else prompt
         if use_warm:
             self.warm(system)  # la siguiente pregunta ya encuentra uno listo

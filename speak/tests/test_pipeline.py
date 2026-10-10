@@ -563,7 +563,8 @@ class CopilotTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: ans.done))
         system, _ = self.llm.prompts[0]
         self.assertGreater(system.index("pregunta de vuelta"), system.index("Format:"))
-        self.assertTrue(system.rstrip().endswith("not in the brief or\nsources."))
+        self.assertIn("never invent prices", system[system.index("pregunta de vuelta"):])
+        self.assertTrue(system.rstrip().endswith("at most 6 lines, no paragraphs."))  # el formato tambien manda
 
     def test_no_guide_leaves_prompt_untouched(self):
         from speak.notes.copilot import ANSWER_SYSTEM, answer_prompt

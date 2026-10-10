@@ -86,6 +86,12 @@ def _interviews() -> list[dict]:
         return []
 
 
+def active_label() -> str:
+    """Nombre de la entrevista activa (su label en index.json, o su id); "" si no hay."""
+    active = _active()
+    return next((i["label"] for i in _interviews() if i["id"] == active), active)
+
+
 def _file_name(name: str) -> str:
     return re.sub(r'[<>:"/\\|?*]', "_", name).strip() or "texto"
 
