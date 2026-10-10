@@ -15,7 +15,9 @@ Todo se guarda en `data/prep/current.json`: si cierras y vuelves, sigue ahi.
 from __future__ import annotations
 
 import json
+import re
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -47,6 +49,7 @@ from ..notes.copilot import COPILOT_MODES, PRESETS, Discovery, PrepSession, atta
 from .bridge import TaskSignals
 
 PREP_FILE = DATA_DIR / "prep" / "current.json"
+LIBRARY_DIR = DATA_DIR / "library"
 
 
 class PasteDialog(QDialog):
@@ -67,10 +70,55 @@ class PasteDialog(QDialog):
         lay.addWidget(buttons)
 
 
+def _active() -> str:
+    try:
+        return json.loads(PREP_FILE.read_text(encoding="utf-8")).get("active", "")
+    except Exception:
+        return ""
+
+
+def _interviews() -> list[dict]:
+    """Entrevistas de data/library/index.json; [] si no existe o no se puede leer."""
+    try:
+        data = json.loads((LIBRARY_DIR / "index.json").read_text(encoding="utf-8"))
+        return [i for i in data.get("interviews", []) if i.get("id") and i.get("label")]
+    except Exception:
+        return []
+
+
+def _file_name(name: str) -> str:
+    return re.sub(r'[<>:"/\\|?*]', "_", name).strip() or "texto"
+
+
 def save_prep(prep: PrepSession) -> None:
     PREP_FILE.parent.mkdir(parents=True, exist_ok=True)
-    data = prep.to_dict() | {"extra": prep.kb.extra_texts()}
-    PREP_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    active = _active()
+    if not active:  # formato anterior: todo dentro del JSON
+        data = prep.to_dict() | {"extra": prep.kb.extra_texts()}
+        PREP_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        return
+    if getattr(prep, "scratch", False):
+        return  # borrador de "Nueva preparacion": no toca library/<active>/
+    folder = LIBRARY_DIR / active
+    extra_dir = folder / "extra"
+    extra_dir.mkdir(parents=True, exist_ok=True)
+    (folder / "brief.md").write_text(prep.brief, encoding="utf-8", newline="")
+    (folder / "guide.md").write_text(prep.guide, encoding="utf-8", newline="")
+    keep = set()
+    for name, text in prep.kb.extra_texts().items():
+        path = extra_dir / f"{_file_name(name)}.md"
+        path.write_text(text, encoding="utf-8", newline="")
+        keep.add(path.name)
+    # Lo que se quito en la app ("Quitar", "Nueva preparacion") no debe volver
+    # al cargar: extra/ refleja exactamente los textos de la preparacion.
+    for path in extra_dir.glob("*.md"):
+        if path.name not in keep:
+            path.unlink()
+    state = {"messages": prep.messages, "guide_name": prep.guide_name}
+    (folder / "state.json").write_text(json.dumps(state, ensure_ascii=False, indent=1) + "\n",
+                                       encoding="utf-8", newline="")
+    data = {"active": active, "mode": prep.mode}
+    PREP_FILE.write_text(json.dumps(data, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def load_prep(prep: PrepSession) -> None:
@@ -80,16 +128,40 @@ def load_prep(prep: PrepSession) -> None:
         data = json.loads(PREP_FILE.read_text(encoding="utf-8"))
     except Exception:
         return
-    prep.load_dict(data)
-    for name, text in data.get("extra", {}).items():
-        prep.kb.add_text(name, text)
+    active = data.get("active")
+    if not active:  # formato anterior: brief, guide y extra dentro del JSON
+        prep.load_dict(data)
+        for name, text in data.get("extra", {}).items():
+            prep.kb.add_text(name, text)
+        return
+    # current.json solo dice cual entrevista esta activa; el contenido vive en
+    # data/library/<active>/ (brief.md, guide.md y extra/*.md).
+    prep.mode = data.get("mode", prep.mode)
+    folder = LIBRARY_DIR / active
+    read = lambda p: p.read_text(encoding="utf-8") if p.exists() else ""
+    prep.brief = read(folder / "brief.md")
+    prep.guide = read(folder / "guide.md")
+    for path in sorted((folder / "extra").glob("*.md")):
+        text = read(path)
+        if text.strip():  # add_text rechaza textos vacios
+            prep.kb.add_text(path.stem, text)
+    # Chat de preparacion y plantilla de la guia de esta entrevista.
+    try:
+        state = json.loads(read(folder / "state.json") or "{}")
+    except Exception:
+        state = {}
+    prep.messages = [tuple(m) for m in state.get("messages", [])]
+    prep.guide_name = state.get("guide_name", "")
 
 
 class PrepWindow(QMainWindow):
-    def __init__(self, cfg: Config, prep: PrepSession, mode_box: QComboBox) -> None:
+    def __init__(self, cfg: Config, prep: PrepSession, mode_box: QComboBox,
+                 on_interview_changed: Callable[[], None] | None = None) -> None:
         super().__init__()
         self.cfg = cfg
         self.prep = prep
+        # La ventana de notas que abrio esta: refresca su lista de documentos.
+        self.on_interview_changed = on_interview_changed
         self.kb: KnowledgeBase = prep.kb
         self.mode_box = mode_box  # el de la ventana de notas: un solo "Tipo"
         self.setWindowTitle("SPEAK — Preparar llamada")
@@ -115,6 +187,21 @@ class PrepWindow(QMainWindow):
         # Fuentes
         left = QWidget()
         ll = QVBoxLayout(left)
+        # Selector de entrevista (data/library/index.json); sin indice, no aparece.
+        self.interview: QComboBox | None = None
+        interviews = _interviews()
+        if interviews:
+            irow = QHBoxLayout()
+            irow.addWidget(QLabel("Entrevista:"))
+            self.interview = QComboBox()
+            for item in interviews:
+                self.interview.addItem(item["label"], item["id"])
+            current = self.interview.findData(_active())
+            if current >= 0:
+                self.interview.setCurrentIndex(current)
+            self.interview.currentIndexChanged.connect(self._interview_changed)
+            irow.addWidget(self.interview, 1)
+            ll.addLayout(irow)
         row = QHBoxLayout()
         row.addWidget(QLabel("Tipo:"))
         self.mode = QComboBox()
@@ -329,12 +416,44 @@ class PrepWindow(QMainWindow):
         self.prep.brief = ""
         self.kb.clear_extra()
         self.brief.setPlainText("")
-        save_prep(self.prep)
+        if _active():
+            # Solo en memoria: library/<active>/ queda intacta y ningun guardado
+            # posterior la toca hasta reabrir la app.
+            self.prep.scratch = True
+            self._set_status("Preparacion nueva (borrador: no se guarda en la biblioteca).")
+        else:
+            save_prep(self.prep)
+            self._set_status("Preparacion nueva.")
         self._refresh_sources()
         self._render_chat()
-        self._set_status("Preparacion nueva.")
 
     # --- chat y brief ---------------------------------------------------------
+
+    def _interview_changed(self, index: int) -> None:
+        new_id = self.interview.itemData(index)
+        if self._busy:
+            self.interview.blockSignals(True)
+            self.interview.setCurrentIndex(max(self.interview.findData(_active()), 0))
+            self.interview.blockSignals(False)
+            self._set_status("Espera a que termine la tarea en curso para cambiar de entrevista.", error=True)
+            return
+        save_prep(self.prep)  # lo pendiente queda en la entrevista anterior
+        PREP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        PREP_FILE.write_text(json.dumps({"active": new_id, "mode": "llamada"}) + "\n", encoding="utf-8")
+        self.prep.scratch = False
+        self.kb.clear_extra()
+        load_prep(self.prep)
+        for box, text in ((self.guide, self.prep.guide), (self.brief, self.prep.brief)):
+            box.blockSignals(True)
+            box.setPlainText(text)
+            box.blockSignals(False)
+        self.mode.setCurrentText(self.prep.mode)
+        self._show_guide_name()
+        self._refresh_sources()
+        self._render_chat()
+        if self.on_interview_changed:
+            self.on_interview_changed()
+        self._set_status(f"Entrevista: {self.interview.itemText(index)}.")
 
     def _mode_changed(self, mode: str) -> None:
         self.prep.mode = mode

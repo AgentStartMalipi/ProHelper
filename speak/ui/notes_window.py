@@ -534,7 +534,7 @@ class NotesWindow(QMainWindow):
 
     def _open_prep(self) -> None:
         if self.prep_window is None:
-            self.prep_window = PrepWindow(self.cfg, self.prep, self.mode)
+            self.prep_window = PrepWindow(self.cfg, self.prep, self.mode, on_interview_changed=self._show_docs)
         self.prep_window.show()
         self.prep_window.raise_()
         self.prep_window.activateWindow()
