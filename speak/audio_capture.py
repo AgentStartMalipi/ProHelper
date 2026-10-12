@@ -176,6 +176,10 @@ class UtteranceSegmenter:
             self._speech_len += n
             if self._buf_len >= self.max_len:
                 self._flush()
+                # Sigue hablando: la frase siguiente empieza aqui, no donde
+                # empezo esta (si no, su fin queda 20 s atras: falso "atraso" y
+                # el copiloto cree que el otro ya callo).
+                self._utt_start = self.samples_seen + n
         else:
             self._silence_samples += n
             if self._buf_len:

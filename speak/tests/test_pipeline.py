@@ -58,6 +58,16 @@ class SegmenterTests(unittest.TestCase):
         audio = np.concatenate([silence(0.5), tone(0.05), silence(0.6)])
         self.assertEqual([e for e in self.feed(audio) if isinstance(e, ac.Utterance)], [])
 
+    def test_long_speech_is_cut_into_consecutive_pieces(self):
+        # Medido 2026-10-08: tras un corte por largo (20 s), el trozo siguiente
+        # heredaba el inicio del anterior y su texto "llegaba" 20-40 s tarde.
+        utts = [e for e in self.feed(tone(45.0)) if isinstance(e, ac.Utterance)]
+        self.assertEqual([(round(u.start), round(u.end)) for u in utts], [(0, 20), (20, 40), (40, 45)])
+        self.assertEqual(utts[0].start, 0.0)
+        for prev, nxt in zip(utts, utts[1:]):
+            self.assertAlmostEqual(nxt.start, prev.end, places=6)  # ni hueco ni solape
+            self.assertAlmostEqual(nxt.end - nxt.start, len(nxt.audio) / SR, places=6)
+
     def test_silence_ticks_grow(self):
         audio = np.concatenate([silence(0.3), tone(0.6), silence(1.0)])
         ticks = [e.silence_ms for e in self.feed(audio) if isinstance(e, ac.SilenceTick)]

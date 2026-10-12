@@ -264,6 +264,67 @@ class SpeechTimesTests(unittest.TestCase):
         self.assertEqual(live.speech(THEM), [])
 
 
+class LongMonologueTests(unittest.TestCase):
+    """El otro habla ~35 s sin pausa: el segmentador corta a los 20 s. Medido
+    2026-10-08: la continuacion heredaba el inicio del primer trozo, asi que el
+    copiloto creia que el otro ya habia callado y respondia al trozo suelto."""
+
+    A = "How would you design the payment service for a bank with our current load, and"
+    B = "how would you handle PCI in Colombia?"
+
+    class ScriptedSTT(SpeechToText):
+        def __init__(self, texts):
+            self.texts = list(texts)
+
+        def transcribe(self, audio, sample_rate, prompt=""):
+            return self.texts.pop(0) if self.texts else ""
+
+        def transcribe_file(self, path):
+            return []
+
+    def push(self, live, start, end):
+        for i in range(int(start * 10), int(end * 10)):
+            live.push("them", tone(0.1), 16000, (i + 1) / 10)
+        track = live._tracks[THEM]
+        self.assertTrue(wait_for(lambda: track.fed >= int(end * SR) - 480 and track._q.empty()))
+
+    def test_copilot_waits_for_the_whole_monologue(self):
+        from speak.llm_client import FakeLLM
+        from speak.notes.copilot import Copilot
+        from speak.notes.live import LiveNotes
+
+        clock = [0.0]  # quieto mientras llega el audio: asi no se rellena con silencio
+        live = LiveNotes(self.ScriptedSTT([self.A, self.B]), None, clock=lambda: clock[0])
+        live.start()
+        cop = Copilot(FakeLLM("ok"), None, "", snapshot=live.snapshot, now=live.now,
+                      pending=lambda: live.pending(THEM), mode="venta", speech=live.speech)
+        try:
+            self.push(live, 0.0, 25.0)
+            self.assertTrue(wait_for(lambda: len(live.snapshot().segments) == 1))
+            clock[0] = 25.0  # 5 s despues del corte, y el otro sigue hablando
+            first = live.snapshot().segments[0]
+            self.assertEqual((round(first.start), round(first.end)), (0, 20))
+            self.assertIsNone(cop.step())  # no responde al trozo suelto
+            self.assertEqual(cop.answers, [])
+            self.assertAlmostEqual(live.speech(THEM)[-1][0], first.end, delta=0.05)  # la frase abierta empieza en el corte
+
+            self.push(live, 25.0, 35.0)
+            clock[0] = 36.0  # callo: el relleno de silencio cierra la frase
+            self.assertTrue(wait_for(lambda: len(live.snapshot().segments) == 2 and live.pending(THEM) == 0))
+            second = live.snapshot().segments[1]
+            self.assertAlmostEqual(second.start, first.end, places=6)
+            self.assertAlmostEqual(second.end, 35.5, delta=0.1)  # + hangover del VAD y hueco que cierra
+            self.assertIsNone(cop.step())  # aun no pasa el silencio de espera (quiet_s)
+            clock[0] = 38.5
+            ans = cop.step()
+            self.assertIsNotNone(ans)
+            self.assertEqual(ans.question, f"{self.A} {self.B}")
+            self.assertEqual(len(cop.answers), 1)
+        finally:
+            live.stop()
+            cop.stop()
+
+
 class StickyLanguageTests(unittest.TestCase):
     class LangSTT(SpeechToText):
         """Detecta "es" siempre; registra con que idioma lo llamaron."""
