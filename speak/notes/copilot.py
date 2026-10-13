@@ -64,6 +64,12 @@ log = logging.getLogger(__name__)
 
 COPILOT_MODES = {"venta", "reunion", "soporte", "arquitectura", "llamada"}
 
+# Con notas preparadas hasta este tamano, van ENTERAS en el system (en vez de
+# trozos buscados). Medido 2026-10-12 con la biblioteca de CERN (~20 KB): con
+# trozos, el LLM movio las landing pages de AWS "at Amadeus" (el trozo perdio
+# su encabezado). Enteras ademas quedan en la cache del prompt.
+FULL_NOTES_CHARS = 40_000
+
 
 # --- prompts -----------------------------------------------------------------
 
@@ -72,11 +78,46 @@ just said something that needs an answer. Write what Yo can say, ready to be spo
 
 Rules:
 - Ground every fact in the BRIEF or the SOURCES, stated exactly as written there: do not add scope, qualifiers or
-  conditions they don't state (no "per unit" if it doesn't say so). Cite the source by its exact name attribute, in
-  brackets: [<name>], or [brief].
-- If the answer is not in them, start with "⚠" and a 3-5 word note saying so, written in the answer language
-  ("⚠ Not in your sources." / "⚠ No está en tus fuentes."), then give a safe way to respond (acknowledge, offer to
-  confirm and follow up). Never invent prices, numbers, dates, names, deadlines or commitments.
+  conditions they don't state (no "per unit" if it doesn't say so). Cite what you used, in brackets: the "## key"
+  of the prepared section ([why_two_degrees]), else the source's exact name attribute ([<name>]), or [brief].
+- Answer the exact question first: the opening line gives what was asked (a "why" gets a reason, a "how" gets
+  the method, a yes/no question ("Have you...?", "Did you...?") starts with "Yes" or "No", or "Yes, partly",
+  then the evidence). Every other line supports that answer; leave out experience
+  that doesn't (no list of achievements when they ask for a motivation).
+- If a prepared section answers the question, build the answer from THAT section: its facts, in its order.
+- Keep every story where the sources put it (company, project, year, who did it): never move a story to another
+  employer, merge two stories, or add details they don't have (numbers, tools, frequencies, who else helped).
+- If the answer needs facts about Yo, the other side or the business (experience, projects, prices, numbers,
+  dates, names, products, commitments) and they are not in them:
+  - The first line is "⚠" and 3-6 words naming what is missing, in the answer language ("⚠ Auth method not in
+    your sources." / "⚠ El método de autenticación no está en tus fuentes."). That line is a private note for Yo,
+    never read aloud: alone on its line, and no other line mentions sources, guessing or not knowing.
+  - Missing detail of Yo's own past work (how Yo built, configured or ran something): say what the sources do
+    state, then how Yo would do it, as general technical knowledge framed as an approach ("the way I'd set it
+    up is...", "the standard approach is..."), never as something Yo did, and never tie it back to Yo's result
+    ("that's what pointed me to...", "that's how I found..."). Never "I'd confirm", "I don't have
+    that detail", "not at hand" or "I won't guess": it was Yo's own work, so that sounds evasive. Shape:
+    "The credentials lived in Key Vault, never in the code." / "The way I'd wire the access is a managed
+    identity with RBAC on the vault, so nothing secret sits in the flow."
+  - Missing detail of a specific past event (what the logs or timestamps showed, the exact setting that changed,
+    a concrete example they ask for): there is no "approach" for that, so never fill it with a plausible story.
+    One short honest line in Yo's voice ("Honestly, I don't remember the exact setting."), then what the
+    sources do state about that event, then at most one line of general knowledge framed as general ("usually
+    that's..."). Never "I won't guess", "in front of me" or "I'd confirm".
+  - A follow-up that drills into something Yo said earlier gets only what the sources state: what Yo said in
+    the conversation is never evidence for new specifics (log lines, steps, IDs, values) about that event.
+  - Missing fact about the other side or the business (prices, numbers, dates, names, deadlines, commitments):
+    acknowledge it and offer to confirm and follow up.
+  - Never invent prices, numbers, dates, names, deadlines or commitments, and never answer the question with a
+    fact that answers a different one. Never invent Yo's experiences, projects, reasons or motivations either:
+    if Yo's own reason is missing, say only what the sources state, briefly. "⚠" is only for that: Yo not
+    having done something is never a reason for "⚠".
+- Never announce a story or example without telling it right there ("the cheese lab story is the best
+  example", "I can tell you about X"): the other side will say "go ahead" and Yo has nothing to read. If a
+  story from the sources fits, tell it in one or two sentences inside the answer; if not, don't name it.
+- General, public technical knowledge (how a protocol, standard or common tool works) is not a missing fact:
+  explain it plainly, without "⚠" and without citing a source for it. Never present it as Yo's own experience.
+- A gap the sources already state ("I haven't done X yet") is NOT missing: no "⚠", just say it as Yo would.
 - Write it in the language given under "Answer language" (the language of the question), even if the brief,
   the sources or the speaker labels ("Yo", "Ellos") are in another language: Yo reads it aloud in the call.
 - Short: this is read during a live conversation. At most ~80 words.
@@ -84,12 +125,24 @@ Rules:
 Format:
 - Yo reads it aloud line by line: one idea per line, short sentences, at most 6 lines. No paragraphs, no bullets, no bold.
 - It must sound like a person talking, not a CV being read:
-  - Open with a natural spoken connector that fits the question, in the answer language, and vary it between
-    answers ("Sure,", "So,", "Well,", "Right —", "Yeah, so" / "Claro,", "Pues,", "Mira,", "Sí, mira"). If the
-    answer starts with "⚠", the connector goes right after that note.
-  - At most 1-2 more connectors, only where the idea changes ("and honestly", "on that note", "the reason is").
-    Not one per line.
-  - Everything else telegraphic: short lines, no filler like "I am a person who is...".
+  - Every line is something Yo can say as-is, in first person, to the other side. Never advice or comments for Yo
+    ("I'd be honest with him", "mention that...") and never talk about the other side in the third person.
+  - Open with a natural spoken connector that fits the question, in the answer language ("Sure,", "So,", "Well,",
+    "Right,", "Yeah, so", "Good question," / "Claro,", "Pues,", "Mira,", "Sí, mira"), as part of the first
+    sentence, never alone on its line. Do not reuse the opener Yo used in the last answers in the Recent
+    conversation; on a quick follow-up about the same topic, starting straight with the answer is fine. If the
+    answer starts with the "⚠" note, the connector opens the first line after it.
+  - At most 1-2 more connectors, only where the idea changes ("on that note", "the reason is"). Not one per line,
+    and "honestly" at most once every few answers.
+  - Short, complete spoken sentences, about 15 words per line at most: subject and verb, not note fragments
+    ("The closest I've done is...", not "Closest example is..."). No filler like "I am a person who is...".
+  - Plain everyday words: Yo is not a native speaker and reads it live. "different" not "heterogeneous",
+    "many" not "a wide mix of", "reach" not "connectivity", "idea" not "conceptually". Technical terms of the
+    field (LDAP, Kubernetes, gateway) are fine; fancy general words are not.
+  - Do not repeat what Yo already said in the Recent conversation: the same disclaimer, the same example or the
+    same closing line. Build on it instead ("as I said, ...") or leave it out.
+  - End on the substance. Do not close with a disclaimer or an offer to confirm ("I haven't done this myself",
+    "happy to confirm", "I'd check with the team"), except for a missing fact about the other side or the business.
   - Never a list of jobs or facts glued together ("X, before that Y, currently Z"). Say it the way people talk:
     "Right now I'm at <A> doing <B>." then "Before that I did <C>."
   - Shape (pattern only, take every fact from the BRIEF or SOURCES):
@@ -97,10 +150,10 @@ Format:
     <one short line on what that looks like>.
     Before that, <previous step>.
     And honestly, <why this question matters to me, from the sources>.
-    Fuente: [<name>]
+    Fuente: [<key or name>]
 - Safe abbreviations that read naturally are welcome: CS, SWE, AWS, K8s, Ops, IAM, SOC, PKI, TLS, M365,
   authN/authZ. Never abbreviate the key words of the answer or anything that would make Yo stumble.
-- Last line: Fuente: [<name>]"""
+- Last line: Fuente: [<key or name>]"""
 
 
 # --- guia --------------------------------------------------------------------
@@ -160,9 +213,11 @@ _GUIDE_HEADER = """## User's guide (follow it: it overrides the default format, 
 {guide}
 
 Whatever the guide says, never invent prices, numbers, dates, names or commitments that are not in the brief or
-sources. Keep the spoken voice too: open with a short natural connector ("Sure,", "So,", "Well,"...; it is not a
-filler intro, it is how people start talking), never glue facts into a CV-style chain, and end with the Fuente
-line. And keep the layout: one idea per line, short sentences, at most 6 lines, no paragraphs."""
+sources. Keep the spoken voice too: open with a short natural connector, varied between answers ("Sure,",
+"So,", "Well,"...; it is not a filler intro, it is how people start talking), only first-person lines Yo can say
+as-is, never glue facts into a CV-style chain, never repeat a disclaimer or example Yo already gave in the Recent
+conversation, and end with the Fuente line. And keep the layout: one idea per line, short sentences,
+at most 6 lines, no paragraphs."""
 
 
 def with_guide(system: str, guide: str) -> str:
@@ -173,7 +228,11 @@ def with_guide(system: str, guide: str) -> str:
 _ES = set("que de la el los las y en con por para es se nos del una un cuánto cuánta qué cómo cuál "
            "cuándo dónde tienen pueden ustedes usted tu su sus pero muy también hay está están son".split())
 _EN = set("the and you what how is are do does can could would of to for with your we our it this that "
-          "have has be will about which when where there".split())
+          "have has be will about which when where there why who did was were tell my i so at in on both "
+          "mentioned said any an".split())
+# Nombres propios con "de/los/la...": "Universidad de los Andes" contaba como
+# espanol y una pregunta en ingles se contesto en espanol (2026-10-12).
+_PROPER_NAME = re.compile(r"\b[A-ZÁÉÍÓÚ][\wáéíóúñ]+(?:\s+(?:de|del|la|las|los|y|e)\s+[A-ZÁÉÍÓÚ][\wáéíóúñ]+)+")
 
 
 def guess_language(text: str) -> str:
@@ -183,7 +242,7 @@ def guess_language(text: str) -> str:
     # Solo el FINAL cuenta: ahi esta la pregunta. Medido 2026-10-08: un turno
     # de 5 min casi todo en espanol terminaba con "Back to English... Tell me
     # about a time..." y se contestaba en espanol porque ganaba el conteo total.
-    tail = _question_tail(text)
+    tail = _PROPER_NAME.sub(" ", _question_tail(text))
     low = tail.lower()
     if re.search(r"\b(back to english|in english|switch to english)\b", low):
         return "English"
@@ -223,23 +282,53 @@ def copilot_sources(kb: KnowledgeBase, question: str, recent: str, max_chars: in
     return out
 
 
+def full_notes(kb: KnowledgeBase | None) -> str:
+    """Las notas preparadas enteras (respuestas, CV...), si caben; "" si no."""
+    texts = kb.extra_texts() if kb is not None else {}
+    if not texts or sum(len(t) for t in texts.values()) > FULL_NOTES_CHARS:
+        return ""
+    return "\n\n".join(f"<source name=\"{name}\">\n{text.strip()}\n</source>" for name, text in sorted(texts.items()))
+
+
 def answer_prompt(question: str, brief: str, sources: str, recent: str, mode: str,
-                  guide: str = "") -> tuple[str, str]:
+                  guide: str = "", notes: str = "") -> tuple[str, str]:
+    """`notes` (ver `full_notes`): el brief y las notas van enteros al INICIO del
+    system, fijos durante la llamada (documentos largos arriba, la pregunta al
+    final; y el prefijo fijo queda en la cache). Sin `notes`, el brief y los
+    pasajes buscados van en el mensaje, como antes."""
     what = MODES.get(mode, MODES["llamada"])
+    system = with_guide(ANSWER_SYSTEM.format(what=what), guide)
+    tail = f"""## Recent conversation
+<conversation>
+{recent}
+</conversation>
+
+## Answer this (said by the other side)
+<question>
+{question}
+</question>
+
+Answer language: {guess_language(question)}"""
+    if notes:
+        system = f"""## BRIEF (prepared before the call)
+<brief>
+{brief.strip() or "(no brief)"}
+</brief>
+
+## SOURCES (Yo's prepared notes, complete: the only source of facts about Yo)
+{notes}
+
+{system}"""
+        more = f"## MORE SOURCES (retrieved from Yo's other documents)\n{sources}\n\n" if sources else ""
+        return system, more + tail
     user = f"""## BRIEF (prepared before the call)
 {brief.strip() or "(no brief)"}
 
 ## SOURCES (retrieved from Yo's documents)
 {sources}
 
-## Recent conversation
-{recent}
-
-## Answer this (said by the other side)
-{question}
-
-Answer language: {guess_language(question)}"""
-    return with_guide(ANSWER_SYSTEM.format(what=what), guide), user
+{tail}"""
+    return system, user
 
 
 PREP_SYSTEM = """You help the user ("Yo") prepare for an upcoming call ({what}). Yo will tell you what it is about and which
@@ -613,6 +702,19 @@ def seems_unfinished(text: str) -> bool:
     return bool(words) and words[-1] in _DANGLING
 
 
+def split_warning(text: str) -> tuple[str, str]:
+    """("⚠ nota", resto). La nota es para Yo, no se lee en voz alta. Medido
+    2026-10-12: el LLM la pegaba a la primera frase ("⚠ Not in my sources, the
+    exact auth method there. Honestly, ...") y se leia como respuesta."""
+    t = (text or "").lstrip()
+    if not t.startswith("⚠"):
+        return "", text or ""
+    first, _, rest = t.partition("\n")
+    m = re.match(r"(⚠[^.!?]*[.!?]?)\s*(.*)", first)
+    note, tail = m.group(1).strip(), m.group(2).strip()
+    return note, f"{tail}\n{rest}".strip()
+
+
 @dataclass
 class Answer:
     id: int
@@ -690,7 +792,9 @@ class Copilot:
         return self.mode in COPILOT_MODES
 
     def _system(self) -> str:
-        return answer_prompt("", "", "", "", self.mode, self._guide())[0]
+        # El mismo system que usara `_generate`: si coincide, se usa el `claude`
+        # pre-arrancado (y su prefijo ya esta en la cache).
+        return answer_prompt("", self._brief(), "", "", self.mode, self._guide(), full_notes(self.kb))[0]
 
     def start(self) -> None:
         # Con un cliente que lo soporte, deja un `claude` arrancado esperando
@@ -839,10 +943,16 @@ class Copilot:
         t_start = time.time()
         recent = render(tr)[-RECENT_CHARS:]
         sources = "(no documents loaded)"
-        if self.kb is not None and self.kb.chunks:
+        notes = full_notes(self.kb)
+        if notes:
+            # Las notas ya van enteras: solo se busca en los demas documentos.
+            extra = set(self.kb.extra_texts())
+            found = [c for c in copilot_sources(self.kb, ans.question, recent) if c.source not in extra]
+            sources = format_sources(found) if found else ""
+        elif self.kb is not None and self.kb.chunks:
             sources = format_sources(copilot_sources(self.kb, ans.question, recent))
         t_search = time.time()
-        system, user = answer_prompt(ans.question, self._brief(), sources, recent, self.mode, self._guide())
+        system, user = answer_prompt(ans.question, self._brief(), sources, recent, self.mode, self._guide(), notes)
         acc = ""
         first: float | None = None
         guard = threading.Lock()  # el primer trozo y el timeout no pueden cruzarse

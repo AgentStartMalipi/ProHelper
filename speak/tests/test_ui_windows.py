@@ -981,5 +981,17 @@ class SimulatorWindowTests(UITestCase):
         self.assertEqual(self.cfg.STT_LANGUAGE, "es")
 
 
+class AnswerBlockTests(unittest.TestCase):
+    def test_what_to_say_is_quoted_and_the_rest_is_not(self):
+        out = nw._answer_block("AL VUELO", "", "⚠ Auth method not in your sources.\nSure, it was Azure Key Vault.\n"
+                               "The credentials lived in the vault.\nFuente: [prepared_answers]", "léela")
+        lines = out.split("  \n")
+        self.assertEqual(lines[1], "*⚠ Auth method not in your sources. — aviso para ti, no lo leas*")
+        self.assertEqual(lines[2:5], ["“Sure, it was Azure Key Vault.", "The credentials lived in the vault.”",
+                                      "Fuente: [prepared_answers]"])
+        self.assertIn("“One line.”", nw._answer_block("MEMORIA", "k", "One line.", "x"))
+        self.assertIn("  \n…  \n", nw._answer_block("AL VUELO", "", "", "x"))  # aun sin texto: sin comillas
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -231,6 +231,19 @@ class CopilotTriggerTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: first.done and second.done))
         self.assertTrue(first.text.endswith("fin"))
 
+    def test_warning_note_is_split_from_what_is_read(self):
+        from speak.notes.copilot import split_warning
+
+        # Casos de la entrevista del 2026-10-12: la nota pegada a la frase.
+        note, rest = split_warning("⚠ Not in my sources, the exact auth method there. Honestly, that's it,\n"
+                                   "so I won't guess.\nFuente: [prepared_answers]")
+        self.assertEqual(note, "⚠ Not in my sources, the exact auth method there.")
+        self.assertEqual(rest, "Honestly, that's it,\nso I won't guess.\nFuente: [prepared_answers]")
+        self.assertEqual(split_warning("⚠ Auth method not in your sources.\nSure, it was Azure Key Vault."),
+                         ("⚠ Auth method not in your sources.", "Sure, it was Azure Key Vault."))
+        self.assertEqual(split_warning("⚠ Not in"), ("⚠ Not in", ""))  # a medio llegar (streaming)
+        self.assertEqual(split_warning("Sure, it was Azure Key Vault."), ("", "Sure, it was Azure Key Vault."))
+
     def test_seems_unfinished(self):
         from speak.notes.copilot import seems_unfinished
 
@@ -476,6 +489,10 @@ class AnswerLanguageTests(unittest.TestCase):
         self.assertEqual(guess_language("Can you tell me about your PCI experience?"), "English")
         self.assertEqual(guess_language("¿Qué experiencia tienen con PCI?"), "Spanish")
         self.assertEqual(guess_language("Usted es creen que Aurora aguanta 10 veces esa carga."), "Spanish")
+        # 2026-10-12: el "de los" del nombre de la universidad la hacia espanola
+        self.assertEqual(guess_language("You mentioned two degrees at Universidad de los Andes. Why both?"),
+                         "English")
+        self.assertEqual(guess_language("¿Por qué estudiaste en la Universidad de los Andes?"), "Spanish")
         # Turno largo en espanol que termina cambiando a ingles: manda el final.
         long_es = ("Vale, ahora cambiamos un momento a español. ¿Has trabajado en remoto antes? ¿Cómo te organizas con "
                    "tu equipo cuando no lo ves en persona? Pues nosotros nos comunicamos en inglés y dejamos todo escrito. "

@@ -45,7 +45,7 @@ from ..config import DATA_DIR, Config
 from ..knowledge import IMAGE_EXT, SUPPORTED, KnowledgeBase
 from ..llm_client import make_llm
 from ..notes.analyzer import MODES, generate_notes, heuristic_report, me_share
-from ..notes.copilot import COPILOT_MODES, Copilot, Discovery, PrepSession, attach_file
+from ..notes.copilot import COPILOT_MODES, Copilot, Discovery, PrepSession, attach_file, split_warning
 from ..notes.instant import PreparedIndex
 from ..notes.pipeline import (ME, THEM, Transcript, _fmt, discard_recording_audio, load_any,
                               parse_transcript_text, render)
@@ -64,14 +64,51 @@ def _reading_lines(text: str, reflow: bool = False) -> list[str]:
     lines = [ln for ln in lines if ln]
     if reflow or len(lines) <= 1:
         lines = re.split(r"(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÑ¿¡\"(\[⚠])", " ".join(lines))
-    return [ln.strip() for ln in lines if ln.strip()]
+    return [part for ln in lines if ln.strip() for part in _split_long(ln.strip())]
+
+
+_LONG_WORDS = 20
+# Pausas naturales donde partir una linea larga (la pausa queda al final de la linea).
+_PAUSE_RE = re.compile(r"(?<=;)\s+|\s+(?=— )|(?<=,)\s+(?=(?:so|but|which|since|then|and then|so that|"
+                       r"rather than|not|pero|así que|entonces|porque|que)\b)", re.I)
+
+
+def _split_long(line: str) -> list[str]:
+    """Parte una linea de mas de ~20 palabras en su pausa natural mas centrada
+    (sin cambiar palabras). Medido 2026-10-12: el LLM daba lineas de 30-40
+    palabras aunque el prompt pide ~15."""
+    words = line.split()
+    if len(words) <= _LONG_WORDS:
+        return [line]
+    cuts = [m.start() for m in _PAUSE_RE.finditer(line)]
+    if not cuts:
+        return [line]
+    mid = len(line) / 2
+    cut = min(cuts, key=lambda c: abs(c - mid))
+    head, tail = line[:cut].strip(), line[cut:].strip()
+    if len(head.split()) < 4 or len(tail.split()) < 4:  # trozo demasiado corto: no compensa
+        return [line]
+    return _split_long(head) + _split_long(tail)
 
 
 def _answer_block(title: str, key: str, text: str, purpose: str, reflow: bool = False) -> str:
     head = f"**{title}**" + (f" · `{key}`" if key else "")
-    lines = _reading_lines(text, reflow) or ["…"]
+    note, text = split_warning(text)
+    if note:  # aviso para Yo, aparte: no es parte de lo que se lee
+        head += f"  \n*{note} — aviso para ti, no lo leas*"
+    lines = _reading_lines(text, reflow)
+    said = [ln for ln in lines if not _SOURCE_RE.match(ln)]
+    if said:  # entre comillas solo lo que se dice; la Fuente queda fuera
+        lines = [ln for ln in lines if _SOURCE_RE.match(ln)]
+        said[0] = f"“{said[0]}"
+        said[-1] = f"{said[-1]}”"
+        lines = said + lines
+    lines = lines or ["…"]
     # "  \n" = salto de linea dentro del mismo bloque (sin parrafos)
     return f"{head}  \n" + "  \n".join(lines) + f"  \n*{purpose}*"
+
+
+_SOURCE_RE = re.compile(r"^(?:Fuente|Source)s?:", re.I)
 
 
 def _pretty_hotkey(spec: str) -> str:

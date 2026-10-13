@@ -137,6 +137,7 @@ class ClaudeCLIClient(LLMClient):
                  prewarm: bool = False) -> None:
         self.model = model
         self.effort = effort
+        self.last_usage: dict = {}  # `usage` del ultimo "result" del CLI
         self.timeout = timeout
         self.prewarm = prewarm
         # (system, proceso, archivo con el system o None). Con un system largo
@@ -284,6 +285,7 @@ class ClaudeCLIClient(LLMClient):
                 elif kind == "result":
                     if ev.get("is_error"):
                         raise LLMError(ev.get("result") or "Claude devolvio un error")
+                    self.last_usage = ev.get("usage") or {}  # tokens, incluida la cache
             proc.wait(timeout=10)
             if not got_delta and final_text:
                 yield final_text  # CLI viejo sin parciales: todo de una

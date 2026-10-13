@@ -114,7 +114,7 @@ If they mention a trial day or task on Spanish hours: "Yes, that works for me. I
 I haven't worked with patient data yet. The closest thing I've done is a payment flow for a client company. It used a bank's existing API, and I kept the credentials in Azure Key Vault. At Amadeus, my personal script is read-only by design. And I'd learn your health-data rules first.
 
 ## internship_how_technical - Your internship was in sales, how technical was it?
-Yes, my title was Intern, in the LATAM sales organization. But my projects were technical. I built the campaign apps myself, in HTML, CSS and JavaScript, with KPI tracking and team dashboards. I used only Amazon's approved services. And I built a multi-agent prototype alone, in Python with the AWS CDK, as my practice project.
+Yes, my title was Intern, in the LATAM sales organization. But my projects were technical. I built the campaign apps myself, in HTML and CSS on Amazon's internal wiki, with KPI tracking and team dashboards in QuickSight. I used only Amazon's approved services. And I built a multi-agent prototype alone, in Python with the AWS CDK, as my practice project.
 
 ## commitment_flight_risk - How do we know you won't leave after six months too?
 That's a fair question. What I want is to build software, and this is a building role, on a product I'd want to grow with for years. And moving to Spain for this role is a big step for me. It's not a short-term plan.
@@ -210,6 +210,9 @@ For the campaign pages I mentioned, I wanted richer dashboards than the standard
 
 ## next_stage_availability - When are you available for the next interview?
 I can do Spanish hours. If you send me a few options by email, I'll confirm quickly.
+
+## landing_pages_tech - What service did you use to host the landing pages | How did you build the landing pages technically | Which tools did you use for the dashboards
+The pages lived on Amazon's internal wiki: that was the approved place to host the HTML. I found out how to add my own formatting there with HTML and CSS. I couldn't use JavaScript, but I managed well without it. For the charts I used Amazon QuickSight, and I also used it to store and organize the campaign data.
 
 ## landing_pages_result - How did the landing pages end up? What was the result and how long did it take?
 In the end, we didn't need the vendor. The first page took me less than a week, about four days, because the team needed it fast. After that, I built all the campaign pages myself, about one every two months. More than two hundred sales professionals used them during each four-week campaign, and teams started asking me for help with their own event pages.

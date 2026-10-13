@@ -423,7 +423,28 @@ def read_document(path: Path) -> str:
 # --- trozos ------------------------------------------------------------------
 
 
+_HEADING = re.compile(r"^#{1,6} \S.*$", re.M)
+
+
 def chunk_text(text: str, size: int = 900, overlap: int = 150) -> list[str]:
+    """Trozos de ~`size` caracteres. Con encabezados markdown, se trocea por
+    seccion y cada trozo empieza con el encabezado de la suya. Medido
+    2026-10-12 (respuestas preparadas de CERN): 1 de 22 trozos lo llevaba, y
+    el LLM movio una historia de AWS "at Amadeus" porque el trozo no decia de
+    que seccion era."""
+    heads = list(_HEADING.finditer(text))
+    if not heads:
+        return _chunk_plain(text, size, overlap)
+    chunks = _chunk_plain(text[:heads[0].start()], size, overlap)
+    for i, head in enumerate(heads):
+        title = head.group(0).strip()
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        for body in _chunk_plain(text[head.end():end], max(200, size - len(title) - 1), overlap):
+            chunks.append(f"{title}\n{body}")
+    return chunks
+
+
+def _chunk_plain(text: str, size: int, overlap: int) -> list[str]:
     paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     pieces: list[str] = []
     for p in paras:  # un parrafo gigante (PDF sin saltos) se parte por frases

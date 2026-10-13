@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import time
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -489,6 +490,45 @@ class KnowledgeTests(unittest.TestCase):
         self.assertGreater(len(chunks), 3)
         self.assertTrue(all(len(c) <= 1100 for c in chunks))
 
+    def test_library_check_reports_contradictions(self):
+        import tempfile
+        from pathlib import Path
+
+        from speak import library_check as lc
+        from speak.llm_client import FakeLLM
+
+        with tempfile.TemporaryDirectory() as tmp:
+            lib = Path(tmp) / "acme" / "extra"
+            lib.mkdir(parents=True)
+            (lib.parent / "brief.md").write_text("Brief de Acme", encoding="utf-8")
+            (lib / "prepared_answers.md").write_text("## proud - Proud\nHTML, CSS and JavaScript", encoding="utf-8")
+            profile = Path(tmp) / "profile.json"
+            profile.write_text('{"projects": "HTML and CSS, no JavaScript"}', encoding="utf-8")
+            llm = FakeLLM('Listo: {"contradictions": [{"section": "proud", "notes": "JavaScript", '
+                          '"profile": "no JavaScript"}], "not_in_profile": []}')
+            with mock.patch.object(lc, "LIBRARY", Path(tmp)):
+                result = lc.check("acme", profile, llm=llm)
+        system, prompt = llm.calls[0]
+        self.assertIn("contradictions", system)
+        self.assertIn("no JavaScript", prompt)  # el perfil
+        self.assertIn('<notes name="prepared_answers">', prompt)  # y las notas
+        self.assertIn("Brief de Acme", prompt)
+        self.assertEqual(result["contradictions"][0]["section"], "proud")
+        self.assertIn("perfil: no JavaScript", lc.report(result))
+        self.assertIn("- nada", lc.report(result))
+
+    def test_chunks_keep_their_section_heading(self):
+        from speak.knowledge import chunk_text
+
+        text = ("# Prepared answers\n\n## landing_pages - Proud project\nAt AWS I built the campaign pages. "
+                + "More detail. " * 120 + "\n\n## incident - Hard incident\nAt Amadeus, connection drops.")
+        chunks = chunk_text(text, size=900)
+        self.assertTrue(all(c.startswith("## ") for c in chunks))
+        landing = [c for c in chunks if c.startswith("## landing_pages")]
+        self.assertGreater(len(landing), 1)  # la seccion larga se parte, y cada trozo dice de cual es
+        self.assertFalse(any("Amadeus" in c for c in landing))  # sin mezclar secciones
+        self.assertTrue(all(len(c) <= 1100 for c in chunks))
+
 
 class CopilotTests(unittest.TestCase):
     def make(self, segs, mode="venta", now=10.0, pending=0, reply="**Respuesta:** 12.000 USD [precios.md]"):
@@ -515,9 +555,27 @@ class CopilotTests(unittest.TestCase):
         self.assertIn("12.000", ans.text)
         system, user = self.llm.prompts[0]
         self.assertIn("Never invent", system)
+        # Notas chicas: van enteras y fijas al inicio del system (cache); el
+        # mensaje solo lleva la conversacion y la pregunta.
+        self.assertIn('<source name="precios.md">', system)
+        self.assertIn("Cliente: Acme", system)
+        self.assertLess(system.index("Cliente: Acme"), system.index("You are the silent"))
+        self.assertNotIn("precios.md", user)
+        self.assertTrue(user.rstrip().endswith("Answer language: English"))
+        self.assertEqual(system, cop._system())  # el pre-arrancado sirve
+        self.assertIsNone(cop.step())  # no la repite
+
+    def test_big_notes_fall_back_to_search(self):
+        from speak.notes import copilot as cp
+
+        cop = self.make([Segment(1, 4, "How much does the energy audit cost?", "Ellos")], now=6.0)
+        with mock.patch.object(cp, "FULL_NOTES_CHARS", 10):
+            ans = cop.step()
+            self.assertTrue(wait_for(lambda: ans.done))
+        system, user = self.llm.prompts[0]
         self.assertIn('<source name="precios.md">', user)
         self.assertIn("Cliente: Acme", user)
-        self.assertIsNone(cop.step())  # no la repite
+        self.assertNotIn("precios.md", system)
 
     def test_waits_for_pending_transcription_and_incomplete_endings(self):
         cop = self.make([Segment(1, 4, "What would you recommend for the plant, and", "Ellos")], now=6.0)
