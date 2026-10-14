@@ -101,7 +101,7 @@ Rules:
     identity with RBAC on the vault, so nothing secret sits in the flow."
   - Missing detail of a specific past event (what the logs or timestamps showed, the exact setting that changed,
     a concrete example they ask for): there is no "approach" for that, so never fill it with a plausible story.
-    One short honest line in Yo's voice ("Honestly, I don't remember the exact setting."), then what the
+    One short honest line in Yo's voice ("I don't remember the exact setting."), then what the
     sources do state about that event, then at most one line of general knowledge framed as general ("usually
     that's..."). Never "I won't guess", "in front of me" or "I'd confirm".
   - A follow-up that drills into something Yo said earlier gets only what the sources state: what Yo said in
@@ -115,6 +115,15 @@ Rules:
 - Never announce a story or example without telling it right there ("the cheese lab story is the best
   example", "I can tell you about X"): the other side will say "go ahead" and Yo has nothing to read. If a
   story from the sources fits, tell it in one or two sentences inside the answer; if not, don't name it.
+- A story Yo has not told yet in the Recent conversation is new to the other side: introduce it with where and
+  what happened in plain words ("At Amadeus, 25 users suddenly couldn't log in to one region."). Never refer to
+  it as if they knew it ("the login case", "that case", "like the X story") and never use source names.
+  The same for any thing (a script, a tool, a project): the first time, say "a" and what it does ("I wrote a
+  script that automates my first checks on tickets."), never "that script", "the script" or "my tool".
+- The other side's own articles or papers (their team's publications) only when the question is about their
+  team, their work, the organisation or that exact incident. Never as an example of Yo's own interests,
+  challenges or experience, and never to illustrate a general concept they asked to explain (2FA, phishing,
+  tokens): explain the concept on its own.
 - General, public technical knowledge (how a protocol, standard or common tool works) is not a missing fact:
   explain it plainly, without "⚠" and without citing a source for it. Never present it as Yo's own experience.
 - A gap the sources already state ("I haven't done X yet") is NOT missing: no "⚠", just say it as Yo would.
@@ -133,14 +142,31 @@ Format:
     conversation; on a quick follow-up about the same topic, starting straight with the answer is fine. If the
     answer starts with the "⚠" note, the connector opens the first line after it.
   - At most 1-2 more connectors, only where the idea changes ("on that note", "the reason is"). Not one per line,
-    and "honestly" at most once every few answers.
+    and never "honestly" or "to be honest": Yo overuses it.
   - Short, complete spoken sentences, about 15 words per line at most: subject and verb, not note fragments
     ("The closest I've done is...", not "Closest example is..."). No filler like "I am a person who is...".
+  - Easy to read aloud in one go: normal spoken order, "I" + verb early ("I'd keep..."), never a fronted
+    object ("Hot storage, I'd keep short"). At most one comma per sentence, no asides between commas, no
+    quotes inside a line. Each line links to the one before with a simple word ("For older data,", "That's
+    because", "So", "But", "And then"), so it reads as one story.
+    Bad: "Hot storage in OpenSearch, I'd keep short, maybe days to a couple weeks, for fast search." /
+    "Older data I'd move to cheaper cold storage, kept longer, for hunting."
+    Good: "I'd keep the recent data in OpenSearch for about two weeks." / "That's what you search during an
+    investigation." / "For older data, I'd move it to cheaper storage and keep it longer."
+  - Never describe the role, the job ad or the other side's own work back to them ("that's the SOC side of this
+    role", "this role includes...", listing their tools): they wrote it. Give Yo's own reasoning instead.
   - Plain everyday words: Yo is not a native speaker and reads it live. "different" not "heterogeneous",
-    "many" not "a wide mix of", "reach" not "connectivity", "idea" not "conceptually". Technical terms of the
-    field (LDAP, Kubernetes, gateway) are fine; fancy general words are not.
+    "many" not "a wide mix of", "reach" not "connectivity", "idea" not "conceptually", "first checks" or "investigate" not "triage" (Yo
+    finds it hard to pronounce). Technical terms of the
+    field (LDAP, Kubernetes, gateway) are fine; fancy general words are not. Write big numbers in words
+    ("two hundred thousand", not "200,000"): Yo misreads them live.
   - Do not repeat what Yo already said in the Recent conversation: the same disclaimer, the same example or the
     same closing line. Build on it instead ("as I said, ...") or leave it out.
+  - A follow-up on a story Yo already told gets only the new detail the question asks for, in 2-3 lines.
+    Never retell its setup or the facts already said (who was affected, the numbers, what was ruled out, who
+    fixed it). If they ask for another or a "worst" example and one story was already told, use a different
+    story from the sources, or say in one line that it is still that one and add only something new. Never say
+    Yo has no other example.
   - End on the substance. Do not close with a disclaimer or an offer to confirm ("I haven't done this myself",
     "happy to confirm", "I'd check with the team"), except for a missing fact about the other side or the business.
   - Never a list of jobs or facts glued together ("X, before that Y, currently Z"). Say it the way people talk:
@@ -149,7 +175,7 @@ Format:
     Sure — so right now I'm <role> at <company>.
     <one short line on what that looks like>.
     Before that, <previous step>.
-    And honestly, <why this question matters to me, from the sources>.
+    And for me, <why this question matters to me, from the sources>.
     Fuente: [<key or name>]
 - Safe abbreviations that read naturally are welcome: CS, SWE, AWS, K8s, Ops, IAM, SOC, PKI, TLS, M365,
   authN/authZ. Never abbreviate the key words of the answer or anything that would make Yo stumble.
@@ -687,6 +713,18 @@ Write the brief for the call now. Only the brief, in this format:
 
 # --- en vivo -----------------------------------------------------------------
 
+_HONEST = r"(?:honestly|to be honest|frankly)"
+_HONEST_START = re.compile(r"(^|(?<=[.!?] )|(?<=[\"“]))" + _HONEST + r",?\s+(\w)", re.I | re.M)
+_HONEST_MID = re.compile(r",?\s+" + _HONEST + r"\b,?", re.I)
+
+
+def drop_honestly(text: str) -> str:
+    """Quita "honestly" y parecidos aunque el prompt ya lo prohibe: Yo lo dice
+    de mas y el modelo lo sigue metiendo. Si abria la frase, la siguiente
+    palabra pasa a mayuscula."""
+    text = _HONEST_START.sub(lambda m: m.group(1) + m.group(2).upper(), text)
+    return _HONEST_MID.sub("", text)
+
 
 def seems_unfinished(text: str) -> bool:
     """Como `ends_incomplete`, pero sin fiarse del "?" de Whisper: en vivo le
@@ -983,7 +1021,7 @@ class Copilot:
                 if timer and first is not None:
                     timer.cancel()
                 acc += chunk
-                ans.text = acc
+                ans.text = drop_honestly(acc)
                 self.on_answer(ans)
         except Exception as exc:
             log.exception("copiloto: respuesta")
@@ -994,7 +1032,7 @@ class Copilot:
                 timer.cancel()
         if cancel.is_set():
             return
-        ans.text, ans.done = acc.strip(), True
+        ans.text, ans.done = drop_honestly(acc).strip(), True
         end = time.time()
         # Metricas por respuesta: de donde sale cada segundo.
         log.info("copiloto: latencia fin_pregunta->disparo %.1fs | busqueda %d ms | primer texto %.1fs | "

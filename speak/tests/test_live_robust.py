@@ -483,6 +483,14 @@ class NoiseFilterTests(unittest.TestCase):
 
 
 class AnswerLanguageTests(unittest.TestCase):
+    def test_honestly_is_removed_from_live_answers(self):
+        from speak.notes.copilot import drop_honestly
+
+        self.assertEqual(drop_honestly("Honestly, what gets me is X.\nAnd honestly, I like it."),
+                         "What gets me is X.\nAnd I like it.")
+        self.assertEqual(drop_honestly("It is, honestly, hard. To be honest I agree."), "It is hard. I agree.")
+        self.assertEqual(drop_honestly("Honest work is good."), "Honest work is good.")
+
     def test_answer_language_follows_the_question(self):
         from speak.notes.copilot import answer_prompt, guess_language
 
