@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+from html import escape as _html_escape
 import threading
 import time
 from pathlib import Path
@@ -46,6 +47,7 @@ from ..knowledge import IMAGE_EXT, SUPPORTED, KnowledgeBase
 from ..llm_client import make_llm
 from ..notes.analyzer import MODES, generate_notes, heuristic_report, me_share
 from ..notes.copilot import COPILOT_MODES, Copilot, Discovery, PrepSession, attach_file, split_warning
+from ..notes.editor import clean_code, editor_html, said_progress
 from ..notes.instant import PreparedIndex
 from ..notes.pipeline import (ME, THEM, Transcript, _fmt, discard_recording_audio, load_any,
                               parse_transcript_text, render)
@@ -67,7 +69,7 @@ def _reading_lines(text: str, reflow: bool = False) -> list[str]:
     return [part for ln in lines if ln.strip() for part in _split_long(ln.strip())]
 
 
-_LONG_WORDS = 20
+_LONG_WORDS = 16  # practica 2026-10-17: con 20 aun se perdia a media frase
 # Pausas naturales donde partir una linea larga (la pausa queda al final de la linea).
 _PAUSE_RE = re.compile(r"(?<=;)\s+|\s+(?=— )|(?<=,)\s+(?=(?:so|but|which|since|then|and then|so that|"
                        r"rather than|not|pero|así que|entonces|porque|que)\b)", re.I)
@@ -147,6 +149,10 @@ class NotesWindow(QMainWindow):
         self.live_sig.notes.connect(self._live_notes)
         self.live_sig.status.connect(lambda m: self._status(f"⚠ {m}", error=True))
         self.live_sig.answer.connect(self._render_copilot)
+        self.live_sig.editor.connect(self._render_editor)
+        self._editor_seen: set[int] = set()  # respuestas cuya pizarra ya abrio la pestaña
+        self._editor_top: set[int] = set()  # trozos de pizarra que ya se mostraron arriba una vez
+        self._back_seen: set[int] = set()  # respuestas que ya devolvieron la vista a Respuestas
         self.live_sig.discovery.connect(self._render_discovery)
         self.live_sig.attached.connect(self._attached)
         self.live_sig.recording.connect(self._recording_opened)
@@ -294,7 +300,47 @@ class NotesWindow(QMainWindow):
         self.out_discovery = QTextBrowser()
         el.addWidget(self.out_discovery, 1)
 
+        ed = QWidget()
+        dl = QVBoxLayout(ed)
+        dl.setContentsMargins(0, 0, 0, 0)
+        dhead = QHBoxLayout()
+        legend = QLabel('<span style="color:#c62828;"><i>» rojo: lo que dices</i></span> · '
+                        '<span style="font-family:Consolas;">negro: lo que escribes</span> · '
+                        '<br><span style="font-family:Consolas; color:#7b1fa2;">morado: escribe o cambia esto</span> · '
+                        '<span style="font-family:Consolas; color:#9e9e9e;">gris: ya está escrito, no lo toques</span>')
+        dhead.addWidget(legend)
+        dhead.addStretch(1)
+        self.btn_editor = QPushButton("✍️ Pizarra ahora (F7)")
+        self.btn_editor.setToolTip("Guion de pizarra para la ultima pregunta, aunque no pareciera de codigo")
+        self.btn_editor.setEnabled(False)
+        dhead.addWidget(self.btn_editor)
+        dl.addLayout(dhead)
+        self.out_editor = QTextBrowser()
+        self.out_editor.setStyleSheet("QTextBrowser { background: #ffffff; color: #111111; }")
+        dl.addWidget(self.out_editor, 1)
+        self.editor_tab = ed
+
+        self.cop_tab = cop
         self.side.addTab(cop, "💬 Respuestas")
+        self.side.addTab(ed, "✍️ Editor")
+        code_tab = QWidget()  # solo el codigo del ejercicio, sin explicacion (sale de la pizarra: siempre cuadra)
+        ql = QVBoxLayout(code_tab)
+        ql.setContentsMargins(0, 0, 0, 0)
+        qhead = QHBoxLayout()
+        self.lbl_code = QLabel("<i>El código del ejercicio, limpio, aparece aquí.</i>")
+        self.lbl_code.setStyleSheet("color: gray;")
+        qhead.addWidget(self.lbl_code)
+        qhead.addStretch(1)
+        self.btn_copy_code = QPushButton("📋 Copiar")
+        self.btn_copy_code.clicked.connect(lambda: QApplication.clipboard().setText(self.out_code.toPlainText()))
+        qhead.addWidget(self.btn_copy_code)
+        ql.addLayout(qhead)
+        self.out_code = QPlainTextEdit()
+        self.out_code.setReadOnly(True)
+        self.out_code.setStyleSheet("QPlainTextEdit { font-family: Consolas, 'Courier New', monospace; "
+                                    "font-size: 11pt; background: #ffffff; color: #111111; }")
+        ql.addWidget(self.out_code, 1)
+        self.side.addTab(code_tab, "🧾 Código")
         self.side.addTab(exp, "🔍 Exploracion")
         sl.addWidget(self.side, 1)
 
@@ -305,6 +351,7 @@ class NotesWindow(QMainWindow):
         lay.addWidget(split, 1)
         self.setCentralWidget(central)
         self._copilot_idle()
+        self._editor_idle()
         self._discovery_idle()
         self._show_docs()
         self._show_interview()
@@ -321,6 +368,8 @@ class NotesWindow(QMainWindow):
         self.on_top.toggled.connect(self._toggle_on_top)
         QShortcut(QKeySequence("F8"), self, activated=self._answer_now)
         QShortcut(QKeySequence("F9"), self, activated=self._discover_now)
+        QShortcut(QKeySequence("F7"), self, activated=self._editor_now)
+        self.btn_editor.clicked.connect(self._editor_now)
         self.btn_discovery.clicked.connect(self._discover_now)
         self.btn_attach.clicked.connect(self._attach)
         self.btn_paste.clicked.connect(self._paste)
@@ -433,9 +482,22 @@ class NotesWindow(QMainWindow):
                 on_status=self.live_sig.status.emit, guide=lambda: self.prep.guide,
                 quiet_s=self.cfg.COPILOT_QUIET_S, eager_s=self.cfg.COPILOT_EAGER_S,
                 instant=self._instant_matcher() if self.cfg.COPILOT_INSTANT else None,
-                live_timeout_s=self.cfg.COPILOT_LIVE_TIMEOUT_S)
+                live_timeout_s=self.cfg.COPILOT_LIVE_TIMEOUT_S,
+                editor_llm=make_llm(self.cfg, effort=self.cfg.COPILOT_EDITOR_EFFORT) if self.cfg.COPILOT_EDITOR else None,
+                supervisor_llm=(make_llm(self.cfg, model=self.cfg.COPILOT_SUPERVISOR_MODEL,
+                                         effort=self.cfg.COPILOT_SUPERVISOR_EFFORT)
+                                if self.cfg.COPILOT_EDITOR and self.cfg.COPILOT_SUPERVISOR_MODEL else None),
+                supervisor_fallback_llm=(make_llm(self.cfg, model=self.cfg.COPILOT_SUPERVISOR_FALLBACK_MODEL,
+                                                  effort=self.cfg.COPILOT_SUPERVISOR_EFFORT)
+                                         if self.cfg.COPILOT_EDITOR and self.cfg.COPILOT_SUPERVISOR_FALLBACK_MODEL
+                                         else None),
+                on_editor=self.live_sig.editor.emit)
             self.copilot.start()
             self.btn_answer.setEnabled(True)
+            self.btn_editor.setEnabled(self.cfg.COPILOT_EDITOR)
+            self._editor_seen.clear()
+            self._back_seen.clear()
+            self._editor_idle()
             self._copilot_idle()
             self.discovery = self._make_discovery(live.snapshot, self.cfg.DISCOVERY_INTERVAL)
             self.discovery.start()
@@ -449,10 +511,13 @@ class NotesWindow(QMainWindow):
             if discovery.text:
                 self._save("exploracion.md", discovery.text)
         self.btn_answer.setEnabled(False)
+        self.btn_editor.setEnabled(False)
         if copilot is not None:
             copilot.stop()
             if copilot.answers:
                 self._save("copilot.md", copilot.render_log())
+            if any(a.editor for a in copilot.answers):
+                self._save("editor.md", copilot.render_editor_log())
         self.out_transcript.setReadOnly(False)
         self.btn_notes.setText("✨ Generar notas")
         if live is None:
@@ -637,6 +702,58 @@ class NotesWindow(QMainWindow):
                    f"**F8**{self._hotkey_hint()} responde a lo ultimo que dijo.*")
         self.out_copilot.setMarkdown(msg)
 
+    def _editor_now(self) -> None:
+        if self.copilot and self.copilot.editor_llm is not None:
+            if self.copilot.editor_now():
+                self.side.setCurrentWidget(self.editor_tab)
+        else:
+            self._status("La pizarra funciona mientras grabas en vivo con el copiloto.", error=True)
+
+    def _editor_idle(self) -> None:
+        if not self.cfg.COPILOT_EDITOR:
+            msg = "<i>Pizarra desactivada (COPILOT_EDITOR=false en speak/.env).</i>"
+        else:
+            msg = ("<i>Cuando te pidan escribir codigo, pseudocodigo o un diagrama, esta pestaña se abre sola "
+                   "con el guion: <span style='color:#c62828;'>» en rojo lo que dices</span> mientras "
+                   "escribes lo de negro. <b>F7</b> lo pide para la ultima pregunta.</i>")
+        self.out_editor.setHtml(msg)
+
+    def _render_editor(self, ans=None) -> None:
+        if not self.copilot:
+            return
+        self._follow_topic(ans)
+        bar = self.out_editor.verticalScrollBar()
+        keep = bar.value()  # el scroll se queda donde lo dejaste (antes volvia arriba con cada trozo)
+        newest = next((a for a in reversed(self.copilot.answers) if a.editor_on or a.editor), None)
+        jump = newest is not None and newest.id not in self._editor_top
+        if jump:
+            self._editor_top.add(newest.id)  # trozo nuevo: arriba, una sola vez
+        tr = self.live_notes.snapshot() if self.live_notes else None
+        parts = []
+        for a in reversed([a for a in self.copilot.answers if a.editor_on or a.editor][-6:]):
+            state = "" if a.editor_done else " ⏳"
+            q = a.question if len(a.question) < 220 else "…" + a.question[-220:]
+            before = a.editor_before if not a.editor_fresh else None  # ejercicio nuevo: nada que comparar
+            said = (said_progress(a.editor, " ".join(s.text for s in tr.segments
+                                                     if s.speaker == ME and s.start >= a.at)) if tr else None)
+            body = (editor_html(a.editor, a.editor_changed, before, said) if a.editor
+                    else "<p><i>Preparando el guion…</i></p>")
+            check = {"revisando": "🔎 revisando…", "ok": "✓ revisado", "corregido": "↻ corregido (amarillo)",
+                     "error": "⚠ revisado: aún falla al ejecutar",
+                     "sin revisar": "⚠ sin revisar (el supervisor no respondió)"}.get(a.editor_check, "")
+            check = f' <span style="color:#888888; font-size:9pt;">· {check}</span>' if check else ""
+            parts.append(f"<p><b>[{_fmt(a.at)}] ❓ {_html_escape(q)}</b>{state}{check}</p>{body}")
+        self.out_editor.setHtml("<hr>".join(parts) if parts else "")
+        bar.setValue(0 if jump else keep)
+        if newest is not None:  # 🧾 Código: el codigo limpio del ejercicio actual
+            code = clean_code(self.copilot._board_at(newest.at + 0.001))
+            if code and code != self.out_code.toPlainText():
+                cbar = self.out_code.verticalScrollBar()
+                ckeep = cbar.value()
+                self.out_code.setPlainText(code)
+                cbar.setValue(ckeep)
+                self.lbl_code.setText(f"<i>[{_fmt(newest.at)}] {len(code.splitlines())} líneas, versión actual</i>")
+
     def _instant_matcher(self):
         """Respuestas preparadas al instante, con los textos de la preparacion
         tal como esten al preguntar (si pegas uno a mitad de llamada, cuenta)."""
@@ -646,24 +763,55 @@ class NotesWindow(QMainWindow):
             return index.match(question)
         return match
 
+    def _follow_topic(self, ans) -> None:
+        """La pestaña sigue el tema de la ultima pregunta: codigo -> ✍️ Editor;
+        otra cosa (o el editor dijo NO_EDIT) -> de vuelta a 💬 Respuestas. Una vez
+        por pregunta: si luego cambias de pestaña a mano, no se te quita."""
+        if ans is None or not self.copilot or not self.copilot.answers or ans is not self.copilot.answers[-1]:
+            return
+        if ans.editor_on:
+            if ans.id not in self._editor_seen:
+                self._editor_seen.add(ans.id)
+                self.side.setCurrentWidget(self.editor_tab)
+        elif (not ans.editor_pending and ans.id not in self._back_seen
+              and self.side.currentWidget() is self.editor_tab):
+            self._back_seen.add(ans.id)
+            self.side.setCurrentWidget(self.cop_tab)
+
     def _render_copilot(self, _answer=None) -> None:
         if not self.copilot:
             return
+        self._follow_topic(_answer)
         parts = []
         for a in reversed(self.copilot.answers[-15:]):
             state = "" if a.done else " ⏳"
             # AL VUELO (la del LLM) siempre; MEMORIA (la preparada) encima, solo
             # si la pregunta coincide casi exactamente con un titulo preparado.
-            blocks = [_answer_block("🎯 AL VUELO", "", a.text, "léela; cubre lo que la memoria no capta")]
+            if a.followup:  # el otro contesto tu pregunta: ideas para seguir el hilo
+                blocks = [_answer_block("💬 SEGUIMIENTO", "", a.text,
+                                        "si quieres seguir el hilo; si no, pasa a tu siguiente pregunta")]
+            elif a.clarify:  # contesto tu pregunta de aclaracion en el ejercicio
+                blocks = [_answer_block("📝 ACLARACIÓN", "", a.text,
+                                        "di tu decisión y sigue con el código; el cambio está en ✍️ Editor")]
+            else:
+                blocks = [_answer_block("🎯 AL VUELO", "", a.text, "léela; cubre lo que la memoria no capta")]
+                if a.fact_flags:  # posibles inventos: datos tuyos que no estan en tus notas
+                    blocks.insert(0, "*⚠ No está en tus notas: " + ", ".join(a.fact_flags[:6])
+                                  + " — compruébalo antes de decirlo*")
             if a.timed_out and not a.text:
                 # El LLM no llego a tiempo: solo MEMORIA; sin ella, un aviso.
                 blocks = [] if a.instant else ["*⌛ AL VUELO no llegó a tiempo. F8 para reintentar.*"]
+            if a.board_only:  # ejercicio: todo en la pizarra, paso a paso
+                blocks = ["*✍️ Ejercicio de código: síguelo en la pestaña **✍️ Editor** "
+                          "(rojo = lo que dices, negro = lo que escribes).*"]
+            elif a.editor_on:
+                blocks.append("*✍️ Guion de pizarra (qué escribir) en la pestaña **✍️ Editor**.*")
             if a.instant:
                 blocks.insert(0, _answer_block("🧠 MEMORIA", a.instant_key, a.instant,
                                                "para arrancar de memoria si la pregunta es idéntica",
                                                reflow=True))
             body = "\n\n&nbsp;\n\n".join(blocks)  # linea en blanco visible entre las dos
-            parts.append(f"**[{_fmt(a.at)}] ❓ {a.question}**{state}\n\n{body}")
+            parts.append(f"**[{_fmt(a.at)}] {'🗣️' if a.followup else '❓'} {a.question}**{state}\n\n{body}")
         self.out_copilot.setMarkdown("\n\n---\n\n".join(parts))
         self.out_copilot.verticalScrollBar().setValue(0)
 
@@ -673,6 +821,8 @@ class NotesWindow(QMainWindow):
         if len(tr.segments) > self._live_segments:  # alguien dijo algo nuevo
             self._live_segments = len(tr.segments)
             self._heard_voice()
+            if self.side.currentWidget() is self.editor_tab:
+                self._render_editor()  # las lineas que ya dijiste se marcan ✓
         bar = self.out_transcript.verticalScrollBar()
         at_end = bar.value() >= bar.maximum() - 4
         keep = bar.value()

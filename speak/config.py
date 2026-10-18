@@ -166,6 +166,21 @@ class Config:
     # Si la pregunta ya cerro con "?", responder tras estos s de silencio en vez
     # de COPILOT_QUIET_S (especulativo: si el otro sigue, se rehace). 0 = apagado.
     COPILOT_EAGER_S: float = 0.5
+    # Pestaña ✍️ Editor: si piden escribir codigo, pseudocodigo o un diagrama,
+    # se abre sola con el guion de pizarra (lo que dices en rojo, lo que
+    # escribes en negro). Gasta una llamada al LLM mas por esas preguntas.
+    COPILOT_EDITOR: bool = True
+    # Esfuerzo del LLM para la pizarra: el codigo debe ser correcto (medido
+    # 2026-10-17: con "low" salian pruebas mal calculadas). Llega por partes.
+    COPILOT_EDITOR_EFFORT: str = "medium"
+    # Supervisor de la pizarra: cuando termina cada trozo, ejecuta el codigo y un modelo
+    # mas capaz corrige en el sitio lo minimo (las lineas tocadas salen en amarillo suave).
+    # "" = sin supervisor.
+    COPILOT_SUPERVISOR_MODEL: str = "claude-opus-5-5"
+    # Si el supervisor se niega (el filtro de Opus 5.5 bloquea a veces contenido de
+    # ciberseguridad legitimo) o falla, revisa este. "" = sin respaldo.
+    COPILOT_SUPERVISOR_FALLBACK_MODEL: str = "claude-sonnet-5-5"
+    COPILOT_SUPERVISOR_EFFORT: str = "low"  # medido 2026-10-17: igual de acertado que medium, ~12 s
     # Exploracion ("¿que me falta?") en vivo: cada cuantos segundos se
     # reescribe si hubo conversacion nueva. 0 = solo con el boton (F9).
     DISCOVERY_INTERVAL: int = 90

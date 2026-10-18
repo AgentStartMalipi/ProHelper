@@ -338,11 +338,12 @@ class FakeLLM(LLMClient):
             yield self.reply[i:i + 7]
 
 
-def make_llm(cfg, prewarm: bool = False) -> LLMClient:
-    """`prewarm`: para el copiloto, donde cada segundo cuenta (ver ClaudeCLIClient)."""
+def make_llm(cfg, prewarm: bool = False, effort: str = "", model: str = "") -> LLMClient:
+    """`prewarm`: para el copiloto, donde cada segundo cuenta (ver ClaudeCLIClient).
+    `effort`: otro esfuerzo que el de LLM_EFFORT (la pizarra pide mas)."""
     provider = cfg.LLM_PROVIDER.strip().lower()
     if provider == "claude_cli":
-        return ClaudeCLIClient(cfg.LLM_MODEL, cfg.LLM_EFFORT, prewarm=prewarm)
+        return ClaudeCLIClient(model or cfg.LLM_MODEL, effort or cfg.LLM_EFFORT, prewarm=prewarm)
     if provider == "anthropic":
         return AnthropicClient(cfg.LLM_MODEL, cfg.API_KEY)
     if provider == "fake":

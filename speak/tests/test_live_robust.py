@@ -624,3 +624,17 @@ class RewriteLogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpellOutWouldTests(unittest.TestCase):
+    def test_i_d_is_read_as_would_or_had(self):
+        from speak.notes.copilot import for_reading
+
+        self.assertEqual(for_reading("I'd check cron. Then I’d run ps."), "I would check cron. Then I would run ps.")
+        self.assertEqual(for_reading("I'd already scanned it, and I'd been there."),
+                         "I had already scanned it, and I had been there.")
+        self.assertEqual(for_reading("Honestly, I'd need logs. You'd see."), "I would need logs. You'd see.")
+        # "read" es pasado o condicional segun lo que sigue (practica CERN2, 2026-10-16).
+        self.assertEqual(for_reading("I'd read that heat changes it. I'd read the logs."),
+                         "I had read that heat changes it. I would read the logs.")
+        self.assertEqual(for_reading("I'd written it."), "I had written it.")

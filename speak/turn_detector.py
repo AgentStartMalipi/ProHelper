@@ -75,6 +75,11 @@ _REQUEST_PATTERNS = [
     r"i'?m (?:curious|wondering)", r"i was wondering", r"i'?d love to hear",
     r"please", r"go ahead and", r"what'?s your", r"let'?s (?:design|build|talk|discuss)",
     r"given (?:an?|the|two|a list|a string|an array)",
+    # Ordenes de entrevista tecnica ("Name one concrete mechanism.", "List three IoCs.")
+    r"name (?:one|two|three|four|five|a|an|the|some|any|a few|\d+)", r"list", r"define", r"compare", r"contrast", r"justify", r"outline", r"show me", r"show us",
+    r"give us", r"tell us", r"pick", r"choose", r"rank", r"estimate", r"propose", r"recommend", r"identify",
+    r"elaborate", r"expand on", r"be (?:more )?specific", r"go deeper", r"convince me", r"defend", r"sketch",
+    r"summari[sz]e", r"spell out",
     # es
     r"cu[eé]ntame", r"descr[ií]be", r"expl[ií]ca", r"dise[nñ]a", r"implementa",
     r"escribe", r"dime", r"h[aá]blame", r"me gustar[ií]a (?:saber|que)", r"supongamos",

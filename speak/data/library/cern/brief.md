@@ -59,9 +59,11 @@ Behavioral (STAR comprimido):
 ## Questions to ask
 - "¿Cuál es el mayor reto de seguridad hoy en una infraestructura científica abierta como el CERN?"
 - "¿Cómo está estructurado el equipo CSO y con qué áreas (WLCG, grid, IT) colabora?"
-- "¿Qué esperaría un GRAE lograr en el primer año? ¿En qué proyectos entraría primero?"
-- "La fecha de inicio era 1-oct-2026, que ya pasó. ¿Cuál sería la fecha real de incorporación?"
-- "¿Cómo se organizan las guardias y el turno on-call?"
+- Las preguntas finales están en 'questions_for_them' (orden y reservas); usar esas.
+- "What would someone in this role work on in the first months?" (nunca decir "GRAE": es la jerga del código de la oferta)
+- "What would a realistic start date look like?" (nunca "October 1st already passed": suena a reclamo)
+- "How is the on-call rota organised in the team?"
+- Más hechos verificados del CERN (2026-10-13): artículo "Are you a team player?" (13 ene 2025): un infostealer en el PC personal de un colega robó contraseñas de Chrome, entre ellas la de una instancia de prueba de un servicio crítico; los atacantes intentaron tomarla y producción se salvó. Campañas de phishing propias del CERN: 15.2% y luego ~22% de clics ("about one in five"). NO verificados (nunca decirlos): "11%", "10,000+ websites", que el artículo "Copied, committed, KO" hable de Polyfill.
 
 ## Gaps a cubrir antes de la entrevista
 - Si no hay experiencia directa con Zeek/Kafka/MISP: preparar cómo lo aprendería y qué es cada uno.
@@ -74,5 +76,7 @@ Behavioral (STAR comprimido):
 - Payment link case (real ticket, 2026-10-05): see 'third_party_link_down'. My part was only checking our side (Splunk, Grafana, maintenance calendar); the payments team found the provider didn't respond; I did not contact the provider or find the root cause. Never name the merchant, the link or the provider. Number of affected transactions: NOT in my notes.
 - My role at Amadeus (Maria, 2026-10-12): I investigate incidents, then fix them or escalate them with evidence. I do NOT protect, secure or harden any platform, and I don't prevent incidents from happening again: never say "I protect / secure / make sure it can't happen again" about Amadeus.
 - Publications (checked 2026-10-12): see 'cern_publication'. Never say "I can't point to one": always name "One click to many" (CERN Computer Security Office, 28 July 2026). Facts only from that section: device code authentication, 90-day token, more than 5000 recipients, 108 clicked, tokens revoked. The ICALEPCS 2025 paper is by S. Lüders himself: mention it only if the talk goes to control systems, chemical engineering or his work, and never claim "flat networks" from it (not in the paper).
+- Numbers to say (Maria misreads them live): the device code token = "three months" (never "90 days": it sounds like "nineteen"); about two hundred thousand personal devices; more than five thousand recipients; 108 clicked. Use only these; if a number is not here, describe it without one.
+- CERN article "The cost of a compromise" (home.cern, checked 2026-10-13): a WLCG Tier-2 site was compromised for months and used for cryptomining; it was disconnected after detection in October 2024. Use it only as the reason to keep logs longer (intrusions are found months later). Never name the site.
 - CERN facts (checked 2026-10-12, CSO Online interview with Lüders, Dec 2025): about 200,000 BYOD devices on the network; they can't install software on devices they don't own, so they monitor the network ("defense in depth"). MFA is NOT mandatory for everyone ("not everyone willingly uses multifactor authentication"): never say CERN made 2FA mandatory.
 - Preparar la respuesta a guardias/turnos nocturnos (decir sí con argumento).

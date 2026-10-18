@@ -207,6 +207,13 @@ class TurnDetectorTests(unittest.TestCase):
         self.assertTrue(completes(events)[0].is_question)
         self.assertEqual(question_kind("Cuéntame de un proyecto difícil."), "request")
         self.assertEqual(question_kind("Como te decía, eso salió bien."), "statement")
+        # Ordenes de entrevista sin "?" (grabacion 2026-10-17 11:53: no se respondio).
+        self.assertEqual(question_kind("You're describing segmentation, but not how you'd enforce it. "
+                                       "Name one concrete mechanism."), "request")
+        for s in ("List three IoCs.", "Compare Zeek and Suricata.", "Justify that choice.",
+                  "Be more specific about the controls."):
+            self.assertEqual(question_kind(s), "request", s)
+        self.assertEqual(question_kind("Name is Stefan, I lead the office."), "statement")
 
 
 class TextAnalysisTests(unittest.TestCase):

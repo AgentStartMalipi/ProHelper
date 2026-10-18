@@ -196,8 +196,8 @@ class UITestCase(unittest.TestCase):
             mock.patch.object(pw, "PREP_FILE", data / "prep" / "current.json"),
             mock.patch.object(mw, "PROFILE_FILE", data / "profile.json"),
             mock.patch.object(nw, "make_stt", lambda cfg, for_files=False, model=None, language=None: self.stt),
-            mock.patch.object(nw, "make_llm", lambda cfg, prewarm=False: self.llm),
-            mock.patch.object(pw, "make_llm", lambda cfg, prewarm=False: self.llm),
+            mock.patch.object(nw, "make_llm", lambda cfg, **kw: self.llm),
+            mock.patch.object(pw, "make_llm", lambda cfg, **kw: self.llm),
             mock.patch.object(recorder_mod, "DualRecorder", FakeRecorder),
             mock.patch("os.startfile", create=True),
         ]
@@ -530,6 +530,30 @@ class NotesWindowTests(UITestCase):
         self.assertTrue(pump(lambda: w.btn_notes.isEnabled()))
         QTest.mouseClick(w.btn_notes, Qt.LeftButton)
         self.assertIn("LIVE_NOTES_INTERVAL=0", w.lbl_status.text())
+
+    def test_tab_follows_topic_editor_then_back_to_answers(self):
+        from speak.notes.copilot import Answer
+        w = self.notes()
+        self.start_live_call(w, "llamada")
+        code = Answer(1, 0.0, "Write a function...", editor_on=True, editor="## Código\n» Hi.\nx = 1")
+        w.copilot.answers = [code]
+        w._render_editor(code)
+        self.assertIs(w.side.currentWidget(), w.editor_tab)  # pide codigo: se abre sola
+        w.side.setCurrentWidget(w.cop_tab)
+        w._render_editor(code)  # mas texto de la misma pizarra: no te la vuelve a poner
+        self.assertIs(w.side.currentWidget(), w.cop_tab)
+        w.side.setCurrentWidget(w.editor_tab)
+        undecided = Answer(2, 30.0, "Why do you want to join?", editor_pending=True)
+        w.copilot.answers.append(undecided)
+        w._render_copilot(undecided)
+        self.assertIs(w.side.currentWidget(), w.editor_tab)  # el editor aun decide: espera
+        undecided.editor_pending = False  # NO_EDIT: otro tema
+        w._render_editor(undecided)
+        self.assertIs(w.side.currentWidget(), w.cop_tab)  # vuelve a Respuestas
+        w.side.setCurrentWidget(w.editor_tab)
+        w._render_copilot(undecided)  # una vez por pregunta: si vuelves a mirar, no te la quita
+        self.assertIs(w.side.currentWidget(), w.editor_tab)
+        w._stop_live()
 
     def test_mode_switch_mid_call_gates_copilot_and_discovery(self):
         w = self.notes()

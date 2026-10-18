@@ -9,6 +9,16 @@
       "id": "cern",
       "label": "CERN",
       "dir": "library/cern"
+    },
+    {
+      "id": "optiver1",
+      "label": "Optiver1",
+      "dir": "library/optiver1"
+    },
+    {
+      "id": "cern2",
+      "label": "CERN2 (2.ª ronda)",
+      "dir": "library/cern2"
     }
   ]
 }

@@ -212,3 +212,69 @@ class InstantAndEagerCopilotTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FollowupTests(unittest.TestCase):
+    """Tras "Do you have questions for me?", lo que el otro explica trae
+    preguntas de seguimiento (sin MEMORIA)."""
+
+    ANSWER = ("Good question. We did disable device code login for most users, but some experiments still "
+              "need it for their scripts, so we kept an exception list and we shortened the tokens.")
+
+    def make(self, segs, now):
+        from speak.notes.copilot import Copilot
+
+        class Recording:
+            prompts = []
+
+            def stream(self, system, prompt, cancel=None, images=None):
+                self.prompts.append(prompt)
+                yield "ok"
+
+            def warm(self, system):
+                pass
+
+        self.llm = Recording()
+        self.llm.prompts = []
+        self.clock = [now]
+        return Copilot(self.llm, None, "", snapshot=lambda: Transcript(list(segs), "t"),
+                       now=lambda: self.clock[0], mode="venta")
+
+    def test_their_answer_after_my_question_gets_followups(self):
+        segs = [Segment(1, 3, "Alright, Maria, do you have questions for me?", THEM)]
+        cop = self.make(segs, now=5.0)
+        first = cop.step()
+        self.assertFalse(first.followup)
+        self.assertTrue(wait_for(lambda: first.done))
+        segs += [Segment(6, 12, "Yes. Did you end up disabling device code login?", ME),
+                 Segment(13, 25, self.ANSWER, THEM)]
+        self.clock[0] = 26.0
+        self.assertIsNone(cop.step())  # aun sin los 2 s de silencio
+        self.clock[0] = 27.5
+        ans = cop.step()
+        self.assertTrue(ans.followup)
+        self.assertEqual(ans.instant, "")
+        self.assertTrue(wait_for(lambda: ans.done))
+        self.assertIn("follow-up questions", self.llm.prompts[-1])
+        self.assertIn("<said>", self.llm.prompts[-1])
+
+    def test_statements_before_the_questions_turn_are_ignored(self):
+        cop = self.make([Segment(1, 12, self.ANSWER, THEM)], now=20.0)
+        self.assertIsNone(cop.step())
+
+    def test_short_reaction_gets_no_followup(self):
+        segs = [Segment(1, 3, "Any questions for us?", THEM)]
+        cop = self.make(segs, now=5.0)
+        self.assertFalse(cop.step().followup)
+        segs += [Segment(6, 9, "What is the team like?", ME), Segment(10, 12, "It's a great team, really.", THEM)]
+        self.clock[0] = 20.0
+        self.assertIsNone(cop.step())
+
+    def test_who_asks_for_questions(self):
+        from speak.notes.copilot import asks_for_questions
+
+        for t in ("Do you have questions for me?", "Alright, Maria, any questions for us?",
+                  "Is there anything you'd like to ask me?", "Okay. Do you have any questions?"):
+            self.assertTrue(asks_for_questions(t), t)
+        for t in ("I have some questions for you.", "Who are you?", "What questions did you prepare about TLS?"):
+            self.assertFalse(asks_for_questions(t), t)

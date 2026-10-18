@@ -1,0 +1,178 @@
+"""Escenarios de la 2.a ronda del CERN sacados de ROUND2_PANEL_QUESTIONS (Maria, 17/10/2026).
+
+Cada cadena es una conversacion seguida (la respuesta de Yo entre preguntas). Cada
+paso: (pregunta, esperado) con esperado:
+  "code"   -> la pestaña Editor debe abrirse (ejercicio nuevo)
+  "follow" -> repregunta del ejercicio: Editor visible (Cambio o Solo decir)
+  "no"     -> pregunta normal: la pestaña Editor NO debe abrirse
+  "any"    -> vale cualquiera
+"""
+
+C, F, N, A = "code", "follow", "no", "any"
+
+CHAINS = [
+    # ---- 0. Repreguntas de la 1.a ronda ----
+    [("Last time you didn't know Puppet. Have you looked at it since?", N),
+     ("What's the difference between a Puppet manifest, a module and a catalog?", N),
+     ("Someone changed sshd_config by hand on a Puppet-managed host. What happens, and how would security use that?", N),
+     ("How would you use Puppet to roll out a security setting to fifteen thousand machines without breaking them?", N)],
+    [("You said least privilege and network policies. Concretely, what would you put in a Pod Security standard "
+      "for a shared cluster?", N),
+     ("A critical CVE in a base image is used by three hundred projects. Owners are slow. What exactly happens on "
+      "day one, day seven, day thirty?", N),
+     ("The automatic redeploy breaks a physicist's analysis job. How do you handle it?", N),
+     ("How do you know which running containers use a vulnerable library if it's not in the base image?", N)],
+    [("The attacker got a shell in the pod and ran commands. What tells you which commands, and from which process?", N),
+     ("The pod was deleted ten minutes after the attack. What evidence do you still have?", N),
+     ("Network logs show the pod connecting to an unknown IP. What's your next step?", N),
+     ("At CERN, VMs run on OpenStack. How would you secure a fleet of VMs you don't own?", N)],
+    [("Give me one Microsoft 365 setting you'd check first and why.", N),
+     ("In July, a hundred and eight people clicked a device code phishing link. Which setting would have helped, "
+      "and what would it break?", N),
+     ("How would you test the impact of a setting before turning it on for fifteen thousand users?", N),
+     ("Your triage script uses a REST API with your credentials. What are the security risks?", N)],
+    [("You use kubectl and grep every day. Write me a one-liner that finds all pods in all namespaces that "
+      "restarted more than five times.", C),
+     ("What if the restarts column shows something like three, five minutes ago?", F),
+     ("OK. You said your incidents are operational. What changes when the incident is a security one?", N)],
+    # ---- 1. Stefan Lueders ----
+    [("Since we last spoke, what have you done to prepare?", N),
+     ("Introduce yourself to the team in two minutes.", N),
+     ("Why do you want to move from operations into security?", N),
+     ("What do you know about what our team does?", N),
+     ("What part of the role excites you most, and what part worries you?", N)],
+    [("You'll spend the first months reviewing Microsoft 365 settings one by one. That's not glamorous. How do you "
+      "stay motivated?", N),
+     ("How do you explain to a physicist why we're taking away something they use?", N),
+     ("Exceptions kill cyber security. When would you still grant one?", N),
+     ("What's the difference between security in a bank and at CERN?", N),
+     ("Tell me about a time you pushed back on a request.", N)],
+    [("How do you prioritise when everything is urgent?", N),
+     ("Where do you see yourself at the end of the two plus one years?", N),
+     ("You'll be on stand-by sometimes, nights and weekends. Is that OK?", N),
+     ("What would you do in your first week if nobody gave you a task?", N),
+     ("How do you learn a completely new technology fast? Give an example.", N)],
+    [("If you found that one of our own team's services was misconfigured, how would you raise it?", N),
+     ("What is the biggest security risk to CERN right now, in your opinion?", N),
+     ("If you had to cut the attack surface of CERN by twenty percent in one year, where would you start?", N),
+     ("How would you measure if the security team is doing a good job?", N)],
+    [("Security versus usability: tell me about a decision where you had to balance them.", N),
+     ("Do you have other interviews or offers? When could you start?", N),
+     ("Alright, we're almost out of time. Any questions for us?", N)],
+    # ---- 2. Liviu Valsan (SOC) ----
+    [("What's a SOC, and what does a SOC analyst do all day?", N),
+     ("What is Zeek?", N),
+     ("Zeek versus Suricata or Snort?", N),
+     ("What's an IoC? Give three examples.", N),
+     ("What is MISP and how do its IoCs reach Zeek?", N)],
+    [("Given a Zeek conn.log, tab-separated, with header lines that start with a hash, print the top ten source "
+      "IPs by number of connections.", C),
+     ("The file is one point two terabytes. What changes?", F),
+     ("Now you have a set of malicious IPs from MISP. Return every connection whose destination is in that set.", C),
+     ("And for domains?", F),
+     ("Why put Kafka between sensors and storage?", N)],
+    [("We see about two and a half billion connections a day and tens of thousands of raw alerts. How do you get "
+      "to a few dozen?", N),
+     ("Traffic is encrypted and we don't decrypt it. What can you still detect?", N),
+     ("A pod looks compromised. How do you trace what happened inside the container?", N),
+     ("Which fields would you log for every command executed on a host, and why?", N)],
+    [("How do you see which kernel modules are loaded, and why does security care?", N),
+     ("Write a script that compares the loaded kernel modules to an allowlist and reports the rest.", C),
+     ("How do you roll this out to fifteen thousand nodes?", F),
+     ("Blocklist versus allowlist of kernel modules: pros and cons?", A),
+     ("What is eBPF and why is it useful for security?", N)],
+    [("A new Linux local privilege escalation CVE comes out. Walk me through the response.", N),
+     ("What's the difference between uid and euid?", N),
+     ("Which Linux commands would you use to check a suspicious host?", A),
+     ("What's a reverse shell and how would you spot one in Zeek logs?", N)],
+    [("What is beaconing and how would you detect it?", N),
+     ("Given the timestamps of connections from one host to one destination, write a function that decides if "
+      "it looks like beaconing.", C),
+     ("Malware adds jitter. Does your function still work?", F),
+     ("How would you detect password spraying against the SSO?", N)],
+    [("Given events with pid, ppid and command, write code that prints the chain of parents for a suspicious pid.",
+      C),
+     ("What if the data has a loop, a pid that points back to itself?", F),
+     ("Let's switch. Tell me about a time you were wrong about a root cause.", N)],
+    # ---- 3. Jose Carlos Luna Duran ----
+    [("What is the WLCG and why is its security hard?", N),
+     ("What security risks do you see in people using AI tools at CERN?", N),
+     ("Explain prompt injection to a physicist.", N),
+     ("You built a multi-agent prototype. How would you secure it if it went to production?", N),
+     ("Should CERN allow AI coding assistants? Under which conditions?", N)],
+    [("An AI agent has access to a user's mailbox. What could go wrong?", N),
+     ("LLM crawlers are hammering our websites. What can we do?", N),
+     ("What is a rootkit? User-mode versus kernel-mode?", N),
+     ("Can you trust a compromised machine to investigate itself?", N)],
+    [("What do you collect first in a forensic investigation, and in which order?", N),
+     ("How do you preserve evidence?", N),
+     ("What would you look for in auth logs after a stolen SSH key?", N),
+     ("A Tier-2 site in the WLCG is mining cryptocurrency on its worker nodes. Your steps?", N)],
+    [("What is responsible vulnerability disclosure?", N),
+     ("What is a CVE and a CVSS score?", N),
+     ("Why isn't CVSS enough to prioritise?", N),
+     ("Time-to-exploit is now negative with AI. What does that change for us?", N)],
+    [("Write a scanner that goes through a repository and flags things that look like AWS keys or private keys.", C),
+     ("You get lots of false positives. What do you do?", F),
+     ("From var log secure, write code that counts failed logins per source IP and flags IPs with more than "
+      "twenty.", C),
+     ("Given web access logs, write a function that finds clients making more than a hundred requests per "
+      "minute.", C),
+     ("What if I want a sliding window instead of fixed minutes?", F)],
+    # ---- 4. Dawid Kulikowski ----
+    [("What's your strongest programming language? Show me how you'd structure a small tool.", C),
+     ("HTTP versus HTTPS?", N),
+     ("What happens when you type a URL in the browser?", N),
+     ("Name some of the OWASP Top 10.", N)],
+    [("Explain SQL injection and how to prevent it.", N),
+     ("Explain XSS. Stored versus reflected?", N),
+     ("What is SSRF and why is it dangerous in a cloud?", N),
+     ("What is CSRF and how does Django protect against it?", N)],
+    [("I paste this in the chat: cursor dot execute with an f-string, select star from users where login equals "
+      "the login variable. What's wrong with this code and how do you fix it?", C),
+     ("How would you write it in Django?", F),
+     ("OK, different topic. How would you find all web servers on CERN's network and what they run?", N),
+     ("A new CVE in a web framework is published. How do you find every affected server in an hour?", N),
+     ("Why OpenSearch for this and not just PostgreSQL?", N)],
+    [("Given a list of services with host, product and version, and a vulnerable version range, write a function "
+      "that returns the affected hosts.", C),
+     ("What about versions like two point four point fifty-eight dash ubuntu one?", F),
+     ("Write a function that checks a website for missing security headers.", C),
+     ("And for ten thousand sites?", F)],
+    [("What's Redis typically used for in such a tool?", N),
+     ("What is an insecure IoT device and why does CERN care?", N),
+     ("How do you scan responsibly without breaking fragile devices?", N),
+     ("How do you store passwords in a web app?", N),
+     ("What would you check in a code review for security?", N)],
+    [("How would you check if a device still uses a default password, safely?", A),
+     ("Write a minimal TCP port check.", C),
+     ("Why use nmap or masscan instead?", F),
+     ("Tell me about a bug you found in your own code and how you found it.", N)],
+    # ---- 5. Pau Cutrina Vilalta ----
+    [("What's the difference between a VM and a container?", N),
+     ("Kubernetes versus OpenShift?", N),
+     ("How would you harden a Kubernetes cluster?", N),
+     ("Why are Kubernetes Secrets not really secret?", N),
+     ("What is a NetworkPolicy? Write one that denies all egress from a namespace.", C)],
+    [("Someone ran kubectl exec into a production pod at 3 am. What do you do?", N),
+     ("Security groups in OpenStack or AWS: what are they?", N),
+     ("What's least privilege? Give an example from your work.", N),
+     ("CERN is starting to use AWS, GCP, Azure and Oracle. What would you secure first in a new cloud account?", N),
+     ("How do you prevent a public S3 bucket or storage bucket?", N)],
+    [("Infrastructure as code: why is it good for security?", N),
+     ("What is a WAF and what are its limits?", N),
+     ("What is TLS doing, step by step, in simple terms?", N),
+     ("How does SSH key authentication work?", N)],
+    [("Why would we want 2FA on SSH, and what breaks if we enforce it?", N),
+     ("Design: how would you add MFA to an old internal portal that doesn't support it?", A),
+     ("How do you rotate a secret used by fifty services without downtime?", N)],
+    [("Given a pod spec as a dictionary, write code that flags privileged containers, root users and hostPath "
+      "volumes.", C),
+     ("How would you enforce this instead of just reporting?", F),
+     ("Given a scanner's JSON output, a list of package and severity, write something that fails the CI build if "
+      "there's any critical.", C),
+     ("Give me a bash one-liner for the five IPs with the most failed SSH logins.", C)],
+    [("You have the current settings and a baseline as dictionaries. Write code that reports what differs.", C),
+     ("How would you decide which drift to fix first?", F),
+     ("Thanks, that's all from my side. Last one: why should we pick you?", N)],
+]
