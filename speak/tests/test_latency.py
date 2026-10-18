@@ -115,6 +115,51 @@ class InstantAndEagerCopilotTests(unittest.TestCase):
         self.assertEqual(ans.instant, "I was preparing for a Solutions Architect role.")  # MEMORIA se conserva
         self.assertAlmostEqual(ans.trigger_lag, 2.0, delta=0.01)
 
+    def test_memorized_answer_is_given_whole_without_llm(self):
+        from speak.llm_client import FakeLLM
+        from speak.notes.copilot import Copilot
+        from speak.notes.instant import PreparedIndex
+
+        prep = ("## intro - Tell me about yourself\n(Memorized intro: give it exactly as written.)\n"
+                + "\n".join(f"Line {i}." for i in range(1, 13)) + "\n")
+
+        class KB:
+            chunks = []
+
+            def extra_texts(self):
+                return {"p": prep}
+
+        llm = FakeLLM("seis lineas")
+        segs = [Segment(1, 4, "Tell me about yourself", THEM)]
+        cop = Copilot(llm, KB(), "", snapshot=lambda: Transcript(list(segs), "t"), now=lambda: 6.0, mode="llamada",
+                      instant=PreparedIndex({"p": prep}).match)
+        ans = cop.step()
+        self.assertTrue(ans.done and ans.memorized)
+        self.assertEqual(ans.text, ans.instant)
+        self.assertIn("Line 12.", ans.instant)  # entera, sin el recorte de 6 lineas
+        self.assertEqual(llm.calls, [])  # sin AL VUELO
+
+    def test_intro_in_other_words_finds_the_memorized_intro(self):
+        from speak.notes.copilot import _INTRO_RE
+
+        for q in ("Before we start, could you say a few words about who you are?", "Introduce yourself, please.",
+                  "Walk us through your path so far, briefly.", "Tell us a little about your background."):
+            self.assertTrue(_INTRO_RE.search(q), q)
+        from speak.notes.copilot import _BURNING_RE
+
+        self.assertTrue(_BURNING_RE.search("What is Maria Alejandra burning for? So what is your interest? I'm all yours."))
+        for q in ("Tell us about your background in Kubernetes networking",
+                  "What did you learn about yourself from that failure?",
+                  "How would you present yourself to a user whose laptop was compromised?"):
+            self.assertFalse(_INTRO_RE.search(q), q)
+
+    def test_vague_words_are_dropped(self):
+        from speak.notes.copilot import for_reading
+
+        self.assertEqual(for_reading("Not instinct, I check the timeline first."), "I check the timeline first.")
+        self.assertEqual(for_reading("That is proof, not instinct."), "That is proof, not guesses.")
+        self.assertEqual(for_reading("My instinct is to check the logs."), "My habit is to check the logs.")
+
     def test_memory_is_not_delayed_by_a_slow_llm(self):
         from speak.notes.instant import PreparedIndex
 

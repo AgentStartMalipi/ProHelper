@@ -25,6 +25,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Iterator
@@ -255,6 +256,15 @@ class ClaudeCLIClient(LLMClient):
         drain.start()
         timer = threading.Timer(self.timeout, proc.kill)
         timer.start()
+        if cancel is not None:
+            # Sin red el CLI no escribe nada: el bucle de abajo nunca ve la cancelacion. Este hilo si.
+            def watch() -> None:
+                while proc.poll() is None:
+                    if cancel.is_set():
+                        proc.kill()
+                        return
+                    time.sleep(0.25)
+            threading.Thread(target=watch, name="claude-cancel-watch", daemon=True).start()
         got_delta = False
         final_text = ""
         try:

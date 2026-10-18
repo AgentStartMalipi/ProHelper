@@ -31,6 +31,7 @@ def secs(mmss: str) -> int:
 
 def main(argv: list[str]) -> None:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    logging.getLogger("speak.notes.copilot").setLevel(logging.INFO)  # tiempos y fuerza bruta
     folder = Path(argv[0])
     lo = secs(argv[argv.index("--from") + 1]) if "--from" in argv else 0
     hi = secs(argv[argv.index("--to") + 1]) if "--to" in argv else 10 ** 6
@@ -78,6 +79,13 @@ def main(argv: list[str]) -> None:
         for found in re.findall(r"^\s*(?:class|def)\s+(\w+)", ans.editor, re.M):
             names.add(found)
     cop.stop()
+    from speak.notes.editor import clean_code, clean_tests, run_code
+    board = cop._board_at(segs[-1].end + 10.0) if segs else ""
+    if board:
+        final = "\n\n".join(x for x in (clean_code(board), clean_tests(board)) if x)
+        print("\n======== codigo oficial final (pestaña Código):\n" + final)
+        from speak.notes.editor import runnable_python
+        print("======== al ejecutarlo:", run_code(final) if runnable_python(final) else "(no es Python: no se ejecuta)")
     print("\n======== avisos:", *(warnings or ["ninguno"]), sep="\n  ")
     print("  nombres de clase/funcion:", sorted(names))
 

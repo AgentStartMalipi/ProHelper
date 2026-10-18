@@ -186,7 +186,8 @@ FIRST DECIDE THE KIND OF ASK:
 (b) A problem with data in and data out (parse, count, detect, find...) or something genuinely unclear: the full
     flow below.
 Use the simplest idiomatic solution an expert would write (for Puppet, validate_cmd on the file resource; not a
-staged copy plus an exec).
+staged copy plus an exec; if they ask to RELOAD rather than restart, the service gets
+restart => '/bin/systemctl reload sshd', because notify alone restarts it).
 
 BOXES for (b), in this order (merge or skip for small asks; a one-liner needs only 2-3 boxes):
 1. Entender: restate inputs, output and constraints as comments; then at most 2 clarifying questions, said aloud
@@ -209,7 +210,8 @@ BOXES for (b), in this order (merge or skip for small asks; a one-liner needs on
    set, a regex), use that same approach. For pseudocode, write clean pseudocode. For a shell one-liner, the
    pipeline plus one comment line per step (awk -F'	' for tab-separated logs).
    For a diagram or graph, draw it in ASCII (boxes and arrows, axes with labels) with short labels.
-5. Prueba: in Python, the tests are 2-3 assert lines with the expected value, traced by hand first:
+5. Prueba: in Python, the tests are 2-3 plain top-level assert lines (never inside a test function, the app
+   keeps every assert and runs them all), each with the expected value, traced by hand first:
    "assert parse_line("2024-01-01 alice login") == ("2024-01-01", "alice", "login")", one for the example and one
    for an edge case, then print("all tests pass"). The » lines say the expected result in words. The test must
    run as typed, with nothing else: literal data in the code, never sys.argv, real files, the network or packages
@@ -240,6 +242,19 @@ If there is no concrete task to write yet (an introduction, how the interview wi
 exactly NO_EDIT. Never answer with prose or explanations to the user of this prompt.
 Spoken lines are said TO the interviewer: "the two lines you asked for", never "the interviewer asked for" or
 any third person about them, and never "Yo".
+IF THE INTERVIEWER SAYS SOMETHING IS MISSING that is already on the board, Yo simply has not typed it yet: never
+argue that it was there. Say "» You're right, I'm adding that now." and give those lines again so Yo types them.
+CHECK AGAINST THE REQUIREMENTS: when the interviewer asks what the code does with an edge case and whether that
+"satisfies the requirements" (or "walk me through exactly what happens"), it is usually a bug hunt. Trace the code
+on that input, then compare with EVERY requirement asked in the exercise (ignore malformed lines, ordering, memory,
+output format). If the behaviour breaks one, say it plainly in the first » line ("It would accept it, and that's
+wrong: a line without bytes is malformed.") and fix it in a Cambio; never defend a behaviour that breaks a stated
+requirement. Such a question is a hint: assume the behaviour does NOT satisfy them unless you can show that every
+requirement holds. A standard format the interviewer named keeps ALL its fields even if they only listed some
+(Apache common log format is: ip ident user [time] "request" status bytes, so a line without bytes is malformed).
+WHAT YOU SAY = WHAT YOU TYPE: a » line that describes the code must match it exactly. If you say "a number or a
+dash", the pattern is (\\d+|-), not \\S+. Never put a » line inside a list, dict or call that spans lines: say it
+before the literal starts.
 Never claim facts about Yo's past work. Spoken lines are what a calm candidate would say, not a lecture: every »
 line max ~15 words, also in "Solo decir"; say ideas, not identifiers ("the matching step", not "_match").
 In spoken lines write "I would" and "I will" in full, never "I'd" or "I'll".
@@ -262,7 +277,9 @@ now asked a follow-up. Decide which case it is, like a strong candidate in a liv
      ones in purple, and the clean code tab shows it as one piece. Here the » lines go BEFORE each function or
      block (1-3 lines saying what changes in it and why), never between two lines of the same function: Yo is
      editing code that is already on screen, not typing it from scratch. No test data or asserts in this box.
-  3. "## Prueba": the updated asserts (see Prueba below), then print("all tests pass").
+  3. "## Prueba": ONLY the new asserts (the interviewer's case first) and any earlier assert whose expected value
+     changes (same call, new value), then print("all tests pass"). The app keeps every earlier assert and runs them
+     all, so never repeat the ones that still hold.
   4. "## Cierre" only if something is left worth one or two » lines.
   Do not repeat notes already typed.
 - A question answered by talking (why does it hold, why this choice, what is the trade-off, would a test catch it):
@@ -451,15 +468,29 @@ def _norm_ws(line: str) -> str:
     return " ".join(line.split())
 
 
+def _voiced(line: str) -> str:
+    """Frase roja con la pronunciacion de las siglas en gris: "RBAC (ár-bak)"."""
+    from .pronounce import pronounce
+
+    return pronounce(line, lambda h: f'<span style="color:#888888; font-style:normal;"> ({h})</span>')
+
+
 def editor_html(text: str, changed: set[int] | None = None, before: str | None = None,
-                said: list[bool] | None = None) -> str:
+                said: list[bool] | None = None, cursor: bool = False) -> str:
     """Los recuadros "✎ EDITOR" en HTML para un QTextBrowser. `changed`: numeros de
     linea (0 = primera de `text`) que el supervisor corrigio: fondo suave y ↻.
     `before`: lo que ya estaba escrito en el ejercicio; las lineas negras que no estaban
     salen en morado (lo que hay que anadir o cambiar)."""
     changed = changed or set()
     seen = new_typed_lines(before) if before else None
-    said_iter = iter(said or [])
+    said_list = list(said or [])
+    # "── sigue aqui ──": antes de la primera linea roja sin decir que va despues de la ultima dicha
+    here = None
+    if cursor and any(said_list):
+        last = max(i for i, ok in enumerate(said_list) if ok)
+        here = next((i for i in range(last + 1, len(said_list)) if not said_list[i]), None)
+    say_n = -1
+    said_iter = iter(said_list)
     marks = _line_marks(text, changed)
     out = []
     typed_here: set[str] = set()  # lo escrito en recuadros anteriores de este mismo texto
@@ -468,17 +499,23 @@ def editor_html(text: str, changed: set[int] | None = None, before: str | None =
         # morado = escribir o cambiar. En una pizarra nueva todo es negro: todo se escribe.
         ref = (seen or set()) | typed_here if seen is not None or (typed_here and title.lower().startswith("cambio")) else None
         head = "✎ EDITOR · lo que escribes mientras hablas" + (f" — {html.escape(title)}" if title else "")
+        if title.lower().startswith("solo decir"):
+            head = "🗣 SOLO DECIR · no escribes nada: lo que ya está en el editor sigue bien"
         rows = []
         for m, (kind, line) in enumerate(lines):
             fixed = (n, m) in marks
             style = f" background-color:{_CHANGED_BG};" if fixed else ""
             tick = " ↻" if fixed else ""
             if kind == "say":
+                say_n += 1
+                if say_n == here:
+                    rows.append('<span style="color:#1565c0; font-weight:bold; font-family:\'Segoe UI\', '
+                                'sans-serif;">──────── sigue aquí ────────</span>')
                 done = next(said_iter, False)  # ya lo dijo: rojo suave con ✓, para ver por donde va
                 color = _SAID if done else _RED
                 mark = "✓ " if done else "» "
                 rows.append(f'<span style="color:{color}; font-style:italic; font-family:\'Segoe UI\', sans-serif;'
-                            f'{style}">{mark}“{html.escape(line)}”{tick}</span>')
+                            f'{style}">{mark}“{_voiced(html.escape(line))}”{tick}</span>')
             else:
                 if ref is None or not line.strip():
                     ink = _INK
@@ -551,6 +588,7 @@ _NOT_PY = re.compile(r"^\s*class \w+(?:::\w+)* *\{|=>|^\s*\w+ \{ *'", re.M)
 
 
 _CODE_BOX = re.compile(r"^(?:c[oó]digo|code|cambio)", re.I)
+_TEST_BOX = re.compile(r"^(?:prueba|test)", re.I)  # las pruebas van en su propio recuadro
 
 
 _HEAD_RE = re.compile(r"^(?:async\s+)?def\s+(\w+)|^class\s+([\w:]+)|^(?:define|node)\s+([\w:']+)"
@@ -574,6 +612,8 @@ def _chunks(code: str) -> list[tuple[str, list[str]]]:
                     key = f"{kind} {name}"
                 else:
                     key = f"{m.group(4)}:{m.group(5)}"
+            elif line.startswith("assert ") and "==" in line:
+                key = "assert:" + " ".join(line.split("==", 1)[0].split())  # mismo caso: se reemplaza
             else:
                 key = "text:" + " ".join(line.split())
             out.append((key, pending + [line]))
@@ -627,12 +667,24 @@ def code_names(code: str) -> set[str]:
     return {k for k, _ in _chunks(code) if k.split(" ", 1)[0] in ("def", "class", "define")}
 
 
-def clean_code(board: str) -> str:
-    """Solo el codigo del ejercicio (pestaña 🧾 Código): las lineas negras del ULTIMO recuadro de
-    codigo (Código o Cambio con codigo), que trae la version entera y actual; sin notas ni frases."""
+def clean_tests(board: str) -> str:
+    """Las pruebas del ejercicio (recuadros Prueba), fusionadas como el codigo: la ultima version de
+    cada funcion de prueba y cada assert (mismo caso: el valor nuevo), sin repetir; el aviso de que
+    todo pasa, una vez y al final."""
+    tests = clean_code(board, _TEST_BOX)
+    done = 'print("all tests pass")'
+    if done in tests:
+        tests = "\n".join(line for line in tests.splitlines() if line.strip() != done).rstrip() + "\n" + done
+    return tests
+
+
+def clean_code(board: str, boxes: "re.Pattern | None" = None) -> str:
+    """Solo el codigo del ejercicio (pestaña 🧾 Código): las lineas negras de los recuadros de
+    codigo (Código o Cambio), fusionadas por nombre en la version actual; sin notas ni frases."""
+    boxes = boxes or _CODE_BOX
     official = ""
     for title, lines in parse_editor(board):
-        if not _CODE_BOX.match(title):
+        if not boxes.match(title):
             continue
         typed = [line for kind, line in lines if kind == "type"]
         if not any(line.strip() and not line.lstrip().startswith(("#", "//")) for line in typed):
@@ -793,7 +845,8 @@ def prune_unchanged_narration(script: str, before: str) -> str:
         raw = lines[i]
         s = raw.strip()
         if s.startswith("##"):
-            in_cambio, first_say = s.lstrip("# ").lower().startswith("cambio"), True
+            title = s.lstrip("# ").lower()
+            in_cambio, first_say = title.startswith("cambio") or (bool(before) and title.startswith("prueba")), True
             out.append(raw)
             i += 1
             continue
@@ -815,3 +868,104 @@ def prune_unchanged_narration(script: str, before: str) -> str:
         out.append(raw)
         i += 1
     return "\n".join(out)
+
+
+REFERENCE_SYSTEM = """You write a brute-force reference to test a candidate's function in a live coding interview.
+Given the requirements and the candidate's code, write:
+1. def reference(...): the SAME parameters as the candidate's main function, slow but obviously correct, written
+   straight from the requirements (try every possibility; for continuous ranges, try every critical point and a
+   point between each pair of neighbouring critical points). Do not copy the candidate's approach.
+2. def random_case(rng): returns a tuple of arguments for one small random input (0 to 6 items, small integers,
+   with duplicates, ties and boundary values on purpose), using rng (a random.Random).
+Standard library only. Output only Python code, no fences, no prints, no tests."""
+
+
+def reference_prompt(spec: str, code: str, main: str) -> tuple[str, str]:
+    return REFERENCE_SYSTEM, (f"## Requirements (everything the interviewer asked)\n{spec}\n\n"
+                              f"## Candidate's code (main function: {main})\n<code>\n{code}\n</code>")
+
+
+def main_function(code: str) -> str | None:
+    """La funcion principal del ejercicio: la primera definida que no es una prueba."""
+    for key, _ in _chunks(code):
+        if key.startswith("def ") and not key[4:].startswith(("test", "_")):
+            return key[4:]
+    return None
+
+
+def cross_check(code: str, reference: str, main: str, cases: int = 300) -> str | None:
+    """Compara la funcion con la referencia de fuerza bruta en casos pequenos al azar.
+    Devuelve el primer contraejemplo ("for args X the code returns A, a brute force gives B") o None."""
+    harness = f"""{code}
+
+{reference}
+
+import copy as _copy, math as _math, random as _random
+def _same(a, b):
+    if isinstance(a, float) or isinstance(b, float):
+        try:
+            return _math.isclose(float(a), float(b), rel_tol=1e-9, abs_tol=1e-9)
+        except (TypeError, ValueError):
+            return False
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    return a == b
+_rng = _random.Random(7)
+for _ in range({cases}):
+    _args = random_case(_rng)
+    try:
+        _want = reference(*_copy.deepcopy(_args))
+    except Exception:
+        continue
+    try:
+        _got = {main}(*_copy.deepcopy(_args))
+    except Exception as _e:
+        _got = "raises " + repr(_e)
+    if not _same(_got, _want):
+        print("MISMATCH|" + repr(_args) + "|" + repr(_got) + "|" + repr(_want))
+        break
+else:
+    print("CROSSCHECK_OK")
+"""
+    rc, out = run_code(harness, timeout=20)
+    for line in out.splitlines():
+        if line.startswith("MISMATCH|"):
+            _, args, got, want = line.split("|", 3)
+            return f"wrong result: for arguments {args} the code returns {got}, but a brute force gives {want}"
+    return None
+
+
+def check_asserts(tests: str, reference: str, main: str) -> list[str]:
+    """Los valores esperados de la Prueba ("assert f(x) == 25.0"), comparados con la fuerza bruta:
+    un ejemplo calculado mal a mano es tan grave como un bug (grabacion 2026-10-18: 25 en vez de 30)."""
+    calls = []
+    for line in tests.splitlines():
+        m = re.match(rf"^assert\s+{re.escape(main)}\((.*)\)\s*==\s*(.+?)\s*$", line.strip())
+        if m:
+            calls.append((m.group(1), m.group(2)))
+    if not calls:
+        return []
+    checks = "\n".join(f"_chk({args!r}, {exp!r})" for args, exp in calls)
+    harness = f"""{reference}
+
+import math as _math
+def _chk(args, exp):
+    try:
+        want = eval("reference(" + args + ")")
+        got = eval(exp)
+    except Exception:
+        return
+    same = (_math.isclose(float(want), float(got), abs_tol=1e-9)
+            if isinstance(want, (int, float)) and isinstance(got, (int, float)) else want == got)
+    if not same:
+        print("BADEXPECT|" + args + "|" + exp + "|" + repr(want))
+{checks}
+"""
+    _, out = run_code(harness, timeout=15)
+    issues = []
+    for line in out.splitlines():
+        if line.startswith("BADEXPECT|"):
+            _, args, exp, want = line.split("|", 3)
+            issues.append(f"the Prueba expects {main}({args}) == {exp}, but a brute force gives {want}: fix that "
+                          "expected value (and the Ejemplo line that says it)")
+    return issues

@@ -266,14 +266,34 @@ class CopilotEditorTests(unittest.TestCase):
         cop = Copilot(main, None, "", snapshot=lambda: Transcript(list(segs), "t"), now=lambda: 100.0,
                       mode="llamada", editor_llm=FakeLLM(SCRIPT))
         self.wait(cop.step())
+        cop.editor_llm = FakeLLM("NO_EDIT")  # la pizarra no tiene nada que decir: entra AL VUELO
         segs.append(Segment(6, 25, "I would use a Counter.", ME))
         segs.append(Segment(30, 34, "Why did you choose that structure?", THEM))
         cop.step()
         t0 = time.time()
-        while len(main.calls) < 2 and time.time() - t0 < 5:
+        while not main.calls and time.time() - t0 < 5:
             time.sleep(0.01)
         self.assertIn("<editor>", main.calls[-1][1])
         self.assertIn("counts = Counter()", main.calls[-1][1])
+
+    def test_board_answer_in_exercise_has_no_competing_al_vuelo(self):
+        # Grabacion 2026-10-18 09:26: la pizarra y AL VUELO respondieron a la vez y se contradecian.
+        segs = [Segment(0, 4, "Write a function that returns the top ten source IPs.", THEM)]
+        main = FakeLLM("Spoken.")
+        say = "## Solo decir\n» It would accept it, and that breaks the malformed-lines requirement."
+        cop = Copilot(main, None, "", snapshot=lambda: Transcript(list(segs), "t"), now=lambda: 100.0,
+                      mode="llamada", editor_llm=FakeLLM(SCRIPT))
+        self.wait(cop.step())
+        cop.editor_llm = FakeLLM(say)
+        segs.append(Segment(6, 25, "I would use a Counter.", ME))
+        segs.append(Segment(30, 34, "Would your function accept a line without the bytes field?", THEM))
+        ans = cop.step()
+        t0 = time.time()
+        while not ans.editor_done and time.time() - t0 < 5:
+            time.sleep(0.01)
+        time.sleep(0.2)
+        self.assertIn("Solo decir", ans.editor)
+        self.assertEqual(main.calls, [])
 
     def test_f7_forces_editor(self):
         segs = [Segment(0, 4, "How would you approach this problem?", THEM)]
@@ -550,3 +570,100 @@ class PruneNarrationTests(unittest.TestCase):
         self.assertNotIn("Same return", out)
         self.assertIn("    for x in xs:", out)  # el codigo no se toca
         self.assertIn("Zero gives zero", out)  # fuera del Cambio, nada cambia
+
+
+class SeparateTestsTests(unittest.TestCase):
+    def test_tests_go_in_their_own_box(self):
+        from speak.notes.editor import clean_code, clean_tests
+        board = ("## Código\n» The function.\ndef f(x):\n    return x\n"
+                 "## Prueba\n» One check.\nassert f(1) == 1\nprint(\"all tests pass\")")
+        self.assertEqual(clean_code(board), "def f(x):\n    return x")
+        self.assertEqual(clean_tests(board), "assert f(1) == 1\nprint(\"all tests pass\")")
+
+
+class FluidBoardTests(unittest.TestCase):
+    """Grabacion 2026-10-18 09:59: sin red se colgaba, cambios enormes, y el entrevistador hallaba los bugs."""
+
+    def test_follow_here_marker_before_next_unsaid_line(self):
+        text = "## Código\n» First.\nx = 1\n» Second.\ny = 2\n» Third.\nz = 3"
+        out = editor_html(text, said=[True, False, False], cursor=True)
+        self.assertLess(out.index("sigue aquí"), out.index("Second."))
+        self.assertGreater(out.index("sigue aquí"), out.index("First."))
+        self.assertNotIn("sigue aquí", editor_html(text, said=[False, False, False], cursor=True))
+
+    def test_assert_with_new_expected_value_replaces_the_old_one(self):
+        from speak.notes.editor import clean_tests
+        board = ("## Prueba\n» Two checks.\nassert f(1) == 20.0\nassert f(2) == 7\nprint(\"all tests pass\")\n"
+                 "## Prueba\n» Now thirty.\nassert f(1) == 30.0\nassert f(3) == 0\nprint(\"all tests pass\")")
+        tests = clean_tests(board)
+        self.assertNotIn("20.0", tests)
+        self.assertIn("assert f(1) == 30.0", tests)
+        self.assertIn("assert f(2) == 7", tests)
+        self.assertTrue(tests.endswith('print("all tests pass")'))
+        self.assertEqual(tests.count("all tests pass"), 1)
+
+    def test_cross_check_finds_a_counterexample(self):
+        from speak.notes.editor import cross_check
+        code = "def biggest(xs):\n    return xs[0] if xs else None"
+        ref = ("def reference(xs):\n    return max(xs) if xs else None\n"
+               "def random_case(rng):\n    return ([rng.randint(-3, 3) for _ in range(rng.randint(0, 5))],)")
+        self.assertIn("brute force gives", cross_check(code, ref, "biggest"))
+        self.assertIsNone(cross_check("def biggest(xs):\n    return max(xs) if xs else None", ref, "biggest"))
+
+    def test_stalled_model_shows_an_error_instead_of_waiting_forever(self):
+        import threading as th
+        from unittest import mock
+
+        class Silent(FakeLLM):
+            def stream(self, system, user, cancel=None):
+                while not cancel.is_set():
+                    time.sleep(0.01)
+                return
+                yield
+
+        segs = [Segment(0, 4, "Write a function that returns the top IPs from log lines.", THEM)]
+        cop = Copilot(FakeLLM("x"), None, "", snapshot=lambda: Transcript(list(segs), "t"), now=lambda: 100.0,
+                      mode="llamada", editor_llm=Silent(""))
+        real = th.Timer
+        with mock.patch("speak.notes.copilot.threading.Timer", lambda s, f: real(s / 300, f)):
+            ans = cop.step()
+            t0 = time.time()
+            while "90 s" not in ans.editor_error and time.time() - t0 < 5:
+                time.sleep(0.01)
+        self.assertIn("F7", ans.editor_error)
+        self.assertIn("90 s", ans.editor_error)
+        self.assertFalse(ans.editor_pending)
+
+
+class GeneralQuestionMidExerciseTests(unittest.TestCase):
+    def test_general_question_during_exercise_still_gets_al_vuelo_at_once(self):
+        segs = [Segment(0, 4, "Write a function that returns the top ten source IPs.", THEM)]
+        main = FakeLLM("Spoken.")
+        cop = Copilot(main, None, "", snapshot=lambda: Transcript(list(segs), "t"), now=lambda: 100.0,
+                      mode="llamada", editor_llm=FakeLLM(SCRIPT))
+        ans = cop.step()
+        t0 = time.time()
+        while not ans.editor_done and time.time() - t0 < 5:
+            time.sleep(0.01)
+        cop.editor_llm = FakeLLM("NO_EDIT")
+        segs.append(Segment(6, 25, "I would use a Counter.", ME))
+        segs.append(Segment(30, 34, "What do you know about our SOC?", THEM))
+        ans2 = cop.step()
+        self.assertFalse(ans2.board_only)
+
+
+class SupervisorLeavesQuestionBoardTests(unittest.TestCase):
+    def test_question_only_board_is_not_sent_to_the_supervisor(self):
+        board = ("## Entender\n» So the function takes one log line.\n# Input: a line\n"
+                 "» One question: is the format fixed, I would propose that?")
+        segs = [Segment(0, 4, "Write a Python function to parse a simple log line.", THEM)]
+        sup = FakeLLM("## Code\n» I will write it all.\ndef f(x):\n    return x")
+        cop = Copilot(FakeLLM("x"), None, "", snapshot=lambda: Transcript(list(segs), "t"), now=lambda: 100.0,
+                      mode="llamada", editor_llm=FakeLLM(board), supervisor_llm=sup)
+        ans = cop.step()
+        t0 = time.time()
+        while (not ans.editor_done or ans.editor_check in ("", "revisando")) and time.time() - t0 < 5:
+            time.sleep(0.01)
+        self.assertIn("One question", ans.editor)
+        self.assertNotIn("def f", ans.editor)
+        self.assertEqual(sup.calls, [])

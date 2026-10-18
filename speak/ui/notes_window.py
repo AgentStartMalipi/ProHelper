@@ -47,8 +47,9 @@ from ..knowledge import IMAGE_EXT, SUPPORTED, KnowledgeBase
 from ..llm_client import make_llm
 from ..notes.analyzer import MODES, generate_notes, heuristic_report, me_share
 from ..notes.copilot import COPILOT_MODES, Copilot, Discovery, PrepSession, attach_file, split_warning
-from ..notes.editor import clean_code, editor_html, said_progress
+from ..notes.editor import clean_code, clean_tests, editor_html, said_progress
 from ..notes.instant import PreparedIndex
+from ..notes.pronounce import pronounce
 from ..notes.pipeline import (ME, THEM, Transcript, _fmt, discard_recording_audio, load_any,
                               parse_transcript_text, render)
 from ..transcriber import FasterWhisperSTT, make_stt
@@ -99,7 +100,8 @@ def _answer_block(title: str, key: str, text: str, purpose: str, reflow: bool = 
     if note:  # aviso para Yo, aparte: no es parte de lo que se lee
         head += f"  \n*{note} — aviso para ti, no lo leas*"
     lines = _reading_lines(text, reflow)
-    said = [ln for ln in lines if not _SOURCE_RE.match(ln)]
+    # con la pronunciacion de las siglas cada vez que salen: "RBAC (ár-bak)"
+    said = [pronounce(ln, lambda h: f" *({h})*") for ln in lines if not _SOURCE_RE.match(ln)]
     if said:  # entre comillas solo lo que se dice; la Fuente queda fuera
         lines = [ln for ln in lines if _SOURCE_RE.match(ln)]
         said[0] = f"“{said[0]}"
@@ -334,12 +336,29 @@ class NotesWindow(QMainWindow):
         self.btn_copy_code = QPushButton("📋 Copiar")
         self.btn_copy_code.clicked.connect(lambda: QApplication.clipboard().setText(self.out_code.toPlainText()))
         qhead.addWidget(self.btn_copy_code)
+        self.btn_copy_all = QPushButton("📋 Copiar todo")  # codigo + pruebas: se pega y corre entero
+        self.btn_copy_all.clicked.connect(lambda: QApplication.clipboard().setText(
+            "\n\n".join(t for t in (self.out_code.toPlainText(), self.out_tests.toPlainText()) if t.strip())))
+        qhead.addWidget(self.btn_copy_all)
         ql.addLayout(qhead)
+        mono = ("QPlainTextEdit { font-family: Consolas, 'Courier New', monospace; "
+                "font-size: 11pt; background: #ffffff; color: #111111; }")
         self.out_code = QPlainTextEdit()
         self.out_code.setReadOnly(True)
-        self.out_code.setStyleSheet("QPlainTextEdit { font-family: Consolas, 'Courier New', monospace; "
-                                    "font-size: 11pt; background: #ffffff; color: #111111; }")
-        ql.addWidget(self.out_code, 1)
+        self.out_code.setStyleSheet(mono)
+        ql.addWidget(self.out_code, 3)
+        thead = QHBoxLayout()  # las pruebas, en su propio recuadro, para no mezclarlas con la funcion
+        self.lbl_tests = QLabel("<b>🧪 Pruebas</b>")
+        thead.addWidget(self.lbl_tests)
+        thead.addStretch(1)
+        self.btn_copy_tests = QPushButton("📋 Copiar pruebas")
+        self.btn_copy_tests.clicked.connect(lambda: QApplication.clipboard().setText(self.out_tests.toPlainText()))
+        thead.addWidget(self.btn_copy_tests)
+        ql.addLayout(thead)
+        self.out_tests = QPlainTextEdit()
+        self.out_tests.setReadOnly(True)
+        self.out_tests.setStyleSheet(mono.replace("#ffffff", "#f6f8f4"))
+        ql.addWidget(self.out_tests, 2)
         self.side.addTab(code_tab, "🧾 Código")
         self.side.addTab(exp, "🔍 Exploracion")
         sl.addWidget(self.side, 1)
@@ -736,7 +755,8 @@ class NotesWindow(QMainWindow):
             before = a.editor_before if not a.editor_fresh else None  # ejercicio nuevo: nada que comparar
             said = (said_progress(a.editor, " ".join(s.text for s in tr.segments
                                                      if s.speaker == ME and s.start >= a.at)) if tr else None)
-            body = (editor_html(a.editor, a.editor_changed, before, said) if a.editor
+            body = (editor_html(a.editor, a.editor_changed, before, said, cursor=a is newest) if a.editor
+                    else f"<p><b style='color:#b71c1c'>{_html_escape(a.editor_error)}</b></p>" if a.editor_error
                     else "<p><i>Preparando el guion…</i></p>")
             check = {"revisando": "🔎 revisando…", "ok": "✓ revisado", "corregido": "↻ corregido (amarillo)",
                      "error": "⚠ revisado: aún falla al ejecutar",
@@ -745,8 +765,15 @@ class NotesWindow(QMainWindow):
             parts.append(f"<p><b>[{_fmt(a.at)}] ❓ {_html_escape(q)}</b>{state}{check}</p>{body}")
         self.out_editor.setHtml("<hr>".join(parts) if parts else "")
         bar.setValue(0 if jump else keep)
-        if newest is not None:  # 🧾 Código: el codigo limpio del ejercicio actual
-            code = clean_code(self.copilot._board_at(newest.at + 0.001))
+        if newest is not None:  # 🧾 Código: el codigo limpio del ejercicio actual, y aparte sus pruebas
+            board = self.copilot._board_at(newest.at + 0.001)
+            tests = clean_tests(board)
+            if tests != self.out_tests.toPlainText():
+                tbar = self.out_tests.verticalScrollBar()
+                tkeep = tbar.value()
+                self.out_tests.setPlainText(tests)
+                tbar.setValue(tkeep)
+            code = clean_code(board)
             if code and code != self.out_code.toPlainText():
                 cbar = self.out_code.verticalScrollBar()
                 ckeep = cbar.value()
@@ -801,6 +828,8 @@ class NotesWindow(QMainWindow):
             if a.timed_out and not a.text:
                 # El LLM no llego a tiempo: solo MEMORIA; sin ella, un aviso.
                 blocks = [] if a.instant else ["*⌛ AL VUELO no llegó a tiempo. F8 para reintentar.*"]
+            if a.memorized:  # te la sabes de memoria: solo MEMORIA, entera
+                blocks = []
             if a.board_only:  # ejercicio: todo en la pizarra, paso a paso
                 blocks = ["*✍️ Ejercicio de código: síguelo en la pestaña **✍️ Editor** "
                           "(rojo = lo que dices, negro = lo que escribes).*"]

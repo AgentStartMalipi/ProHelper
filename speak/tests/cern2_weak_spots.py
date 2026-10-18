@@ -23,7 +23,8 @@ from speak.notes.pipeline import ME, THEM, Transcript
 from speak.tests.copilot_eval import _SOURCE, load_library
 from speak.transcriber import Segment
 
-LEARNED = r"since (?:our|the|my) first (?:conversation|interview)|weak spot|been (?:reading|learning|studying)|(?:went|going|gone) back over|struggled with"
+LEARNED = (r"since (?:our|the|my) first (?:conversation|interview)|weak(?:er)? spots?|been (?:reading|learning|studying)"
+           r"|(?:went|going|gone|go) back over|struggled with|I (?:read|went through|looked into)|Liviu's")
 CLAIMED = (r"\bI (?:have )?(?:configured|used|deployed|wrote|managed|ran|set up)\b[^.]{0,40}\bPuppet\b"
            r"|\bPuppet\b[^.]{0,30}\bI (?:configured|deployed|used)\b|\bmy Puppet\b|(?<!n.t )used Puppet in production")
 

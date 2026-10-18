@@ -58,7 +58,8 @@ from ..knowledge import IMAGE_EXT, KnowledgeBase, format_sources
 from ..llm_client import LLMClient
 from ..turn_detector import _DANGLING, _WORD_RE, ends_incomplete, only_fillers, question_kind
 from .analyzer import MODES
-from .editor import (NO_EDIT, awaiting_answer, clean_code, code_names, parse_editor, progress_note, said_progress,
+from .editor import (NO_EDIT, awaiting_answer, clean_code, clean_tests, code_names, check_asserts, cross_check, main_function,
+                     reference_prompt, parse_editor, progress_note, said_progress,
                      prune_unchanged_narration, stop_point, changed_lines, changes_topic, continues_editor, editor_prompt,
                      is_go_ahead, is_story, narration_issues, output_mismatches, run_code, runnable_python, supervisor_prompt,
                      typed_code,
@@ -395,6 +396,13 @@ _STOPW = {"the", "and", "that", "this", "with", "for", "will", "would", "have", 
           "which", "what", "about", "should", "there", "are", "was", "but", "not", "you", "your", "our", "can"}
 
 
+_END = r"(?:[\s,]+(?:briefly|please|quickly|first|in (?:one|a|two|\d+|a couple of) minutes?|(?:for|to) (?:the|us|everyone|all)\b[\w ]{0,20})){0,3}[\s,.?!]*$"
+_INTRO_RE = re.compile(
+    r"\b(?:(?:introduc(?:e|ing)|present(?:ing)?) yourself|(?:tell|say)(?: \w+){0,4} about (?:yourself|who you are)"
+    r"|a few words about (?:yourself|who you are)|walk (?:me|us) through your (?:background|path|cv|resume|career)"
+    r"(?: so far)?|tell (?:me|us)(?: \w+){0,3} about your background|who (?:is maria|are you))" + _END, re.I)
+# La apertura de Stefan en la 1.a ronda: "What is Maria Alejandra burning for? ... I'm all yours."
+_BURNING_RE = re.compile(r"\b(?:what (?:is|are) [\w ]{0,30}burning for|what do you burn for)\b", re.I)
 _SINCE_RE = re.compile(r"since (?:our|the) (?:first|last) (?:interview|conversation|round)", re.I)
 
 
@@ -404,6 +412,23 @@ def _content_words(text: str) -> set[str]:
 
 def _say_lines(script: str) -> list[str]:
     return [line for _, lines in parse_editor(script) for kind, line in lines if kind == "say"]
+
+
+_ABOUT_CODE = re.compile(
+    r"\b(?:your (?:function|code|implementation|solution|regex|pattern|loop|class|test|script|query|approach)|"
+    r"the (?:function|code|implementation|regex|pattern|loop|output|input|result|edge|test|bug)|"
+    r"returns?|line|lines|edge case|input|output|complexity|big o|fix|modify|change|walk me through|trace|"
+    r"what happens|true maximum|correct|efficient|memory|test|assert|example|case)\b", re.I)
+
+
+def about_code(question: str) -> bool:
+    """La repregunta habla del ejercicio en pantalla (si no, AL VUELO no espera a la pizarra)."""
+    return bool(_ABOUT_CODE.search(question or ""))
+
+
+def _official(script: str) -> str:
+    """El codigo oficial y sus pruebas, fusionados (lo que se ejecuta y lo que Yo tiene en pantalla)."""
+    return _join(clean_code(script), clean_tests(script))
 
 
 def _join(a: str, b: str) -> str:
@@ -927,7 +952,7 @@ Write the brief for the call now. Only the brief, in this format:
 
 # --- en vivo -----------------------------------------------------------------
 
-_HONEST = r"(?:honestly|to be honest|frankly)"
+_HONEST = r"(?:honestly|to be honest|frankly|as I (?:mentioned|said)(?: before| earlier)?)"  # la guia los prohibe
 _HONEST_START = re.compile(r"(^|(?<=[.!?] )|(?<=[\"“]))" + _HONEST + r",?\s+(\w)", re.I | re.M)
 _HONEST_MID = re.compile(r",?\s+" + _HONEST + r"\b,?", re.I)
 
@@ -959,9 +984,26 @@ def spell_out_would(text: str) -> str:
     return _I_D.sub(repl, text)
 
 
+# Palabras vagas que el entrevistador convierte en la siguiente pregunta ("You say instinct?
+# Give a concrete example.", simulacro 2026-10-18): ni siquiera negadas.
+_VAGUE_NOT = re.compile(r"\b(not|no)(\s+(?:on|by|from)?\s*(?:my|a|an|the)?\s*)(?:gut(?:\s+feelings?)?|instincts?)\b",
+                        re.I)
+_VAGUE = re.compile(r"\b(?:gut\s+feelings?|instincts?)\b", re.I)
+
+
+def drop_vague(text: str) -> str:
+    """"proof, not instinct" -> "proof, not guesses"; "my instinct" -> "my habit"."""
+    # "Not instinct, I check..." abriendo la frase: se quita y sigue la frase.
+    text = re.sub(r"(^|(?<=[.!?] ))(?:Not|No)\s+(?:my\s+)?(?:gut(?:\s+feelings?)?|instincts?)[,.;:]\s+(\w)",
+                  lambda m: m.group(1) + m.group(2).upper(), text, flags=re.M)
+    text = _VAGUE_NOT.sub(lambda m: m.group(1) + " guesses", text)
+    return _VAGUE.sub(lambda m: ("Habit" if m.group(0)[0].isupper() else "habit")
+                      + ("s" if m.group(0).lower().endswith("s") else ""), text)
+
+
 def for_reading(text: str) -> str:
-    """Lo que Yo lee en vivo: sin "honestly" y sin "I'd"."""
-    return spell_out_would(drop_honestly(text))
+    """Lo que Yo lee en vivo: sin "honestly", sin "I'd" y sin "instinct"."""
+    return spell_out_would(drop_vague(drop_honestly(text)))
 
 
 def _is_script(text: str) -> bool:
@@ -1014,6 +1056,7 @@ class Answer:
     last_done: str = ""  # la ultima respuesta completa, por si la reescritura no termina
     instant: str = ""  # respuesta preparada mostrada al instante (ver notes/instant.py)
     instant_key: str = ""
+    memorized: bool = False  # la preparada se dice tal cual: no hay AL VUELO
     trigger_lag: float = 0.0  # s desde que el otro termino de hablar hasta disparar
     timed_out: bool = False  # el LLM no escribio nada a tiempo (ver Copilot.live_timeout_s)
     followup: bool = False  # el otro contesto una pregunta de Yo: sugerencias para seguir el hilo
@@ -1040,6 +1083,7 @@ class Answer:
     editor_qlen: int = 0  # hasta donde de la pregunta cubre lo ya mostrado
     editor_visible: bool = False  # la generacion en curso ya mostro algo
     editor_regrow: bool = False  # al terminar (y revisar), seguir con lo que se anadio a la pregunta
+    editor_error: str = ""  # la pizarra no pudo responder (sin red, error): se ve en vez de "Preparando..."
     fact_flags: list = field(default_factory=list)  # datos de Yo en AL VUELO que no estan en sus notas
 
 
@@ -1334,6 +1378,11 @@ class Copilot:
             ans.text, ans.done = "", True
             self.on_answer(ans)
             return ans
+        if ans.instant and self._memorized(ans.instant_key):
+            # Respuesta que Yo se sabe de memoria: AL VUELO la recortaria a 6 lineas y la cambiaria.
+            ans.text, ans.done, ans.memorized = ans.instant, True, True
+            self.on_answer(ans)
+            return ans
         if ans.instant:
             self.on_answer(ans)  # la preparada (MEMORIA) se ve ya; la del LLM (AL VUELO) llega despues
         self._start_al_vuelo(ans, tr, cancel)
@@ -1493,7 +1542,9 @@ class Copilot:
                 ans.editor_before = previous
             ans.editor_pending, ans.editor_visible, ans.editor_regrow = True, False, False
             if not forced:  # se decide antes de lanzar el editor (si no, carrera con su final)
-                ans.board_only = ans.clarify or new or bool(base)
+                # Con el ejercicio abierto la pizarra responde sola: dos respuestas a la vez se contradecian
+                # (grabacion 2026-10-18 09:26). Si la pizarra no da nada, entra AL VUELO (_al_vuelo_fallback).
+                ans.board_only = ans.clarify or new or bool(base) or (bool(previous) and about_code(ans.question))
         if sure or base:
             self.on_editor(ans)
         threading.Thread(target=self._generate_editor, args=(ans, tr, cancel, _join(previous, base)),
@@ -1521,13 +1572,40 @@ class Copilot:
         ans.editor_qlen = len(ans.question)
         system, user = editor_prompt(question, render(tr)[-RECENT_CHARS:], previous, ans.instant,
                                      clarify=ans.clarify, progress=progress, spec=spec,
-                                     code=clean_code(previous) if previous else "", glossary=self._glossary())
+                                     code=_join(clean_code(previous), clean_tests(previous)) if previous else "",
+                                     glossary=self._glossary())
         acc = ""
         halt = threading.Event()  # corte duro propio: para la generacion sin cancelar la respuesta
-        both = _AnyEvent(cancel, halt)
+        stalled = threading.Event()
+        both = _AnyEvent(cancel, halt, stalled)
+
+        def slow() -> None:
+            # Sin red el modelo no escribe nada y la pizarra se quedaba en "Preparando..." para siempre
+            # (grabacion 2026-10-18 09:59: 2 minutos sin respuesta). A los 30 s solo se avisa: con carga, un
+            # modelo lento tambien tarda en empezar y su respuesta sirve (no se corta).
+            if not acc and not cancel.is_set() and not stalled.is_set():
+                ans.editor_error = "⏳ el modelo tarda más de lo normal (¿red?). Sigo esperando; F7 lo reintenta."
+                ans.editor_on = True
+                log.warning("copiloto: pizarra sin texto en 30 s")
+                self.on_editor(ans)
+
+        def stall() -> None:
+            if not acc and not cancel.is_set():
+                stalled.set()
+                ans.editor_error = "⚠ el modelo no respondió en 90 s (¿sin red?). F7 lo reintenta."
+                ans.editor_pending, ans.editor_done, ans.editor_on = False, True, True
+                log.warning("copiloto: pizarra sin respuesta en 90 s")
+                self.on_editor(ans)
+
+        notice = threading.Timer(30.0, slow)
+        watchdog = threading.Timer(90.0, stall)
+        for t in (notice, watchdog):
+            t.daemon = True
+            t.start()
+        ans.editor_error = ""
         try:
             for chunk in self.editor_llm.stream(system, user, both):
-                if cancel.is_set():
+                if cancel.is_set() or stalled.is_set():
                     return
                 if halt.is_set():
                     continue  # el CLI se cierra en la siguiente linea; lo que llegue ya no cuenta
@@ -1542,15 +1620,23 @@ class Copilot:
                     continue  # quiza "NO_EDIT" o prosa: no se muestra nada todavia
                 shown = prune_unchanged_narration(_said_for_reading(acc), previous)
                 ans.editor, ans.editor_on, ans.editor_visible = _join(base, shown), True, True
+                ans.editor_error = ""  # llego texto: fuera el aviso de espera
                 self.on_editor(ans)
         except Exception as exc:
+            watchdog.cancel()
+            notice.cancel()
+            if stalled.is_set():
+                return
             log.exception("copiloto: pizarra")
+            ans.editor_error = f"⚠ la pizarra falló: {str(exc)[:120]}. F7 lo reintenta."
             ans.editor_pending = False
             self.on_status(f"pizarra: {exc}")
             self.on_editor(ans)
             self._al_vuelo_fallback(ans, tr)
             return
-        if cancel.is_set():
+        watchdog.cancel()
+        notice.cancel()
+        if cancel.is_set() or stalled.is_set():
             return
         ans.editor_pending = False
         part = ""
@@ -1604,9 +1690,13 @@ class Copilot:
         Dos pasadas como mucho: si su correccion aun falla al ejecutarse, se la devuelve."""
         t0 = time.time()
         base = ans.editor_base
+        corrected = False
         try:
+            whole = f"{previous}\n\n{part}" if previous else part
+            brute =self._brute_force_issue(ans, tr, whole)  # una vez: contraejemplo de fuerza bruta o None
             for attempt in range(2):
-                code = typed_code(f"{previous}\n\n{part}" if previous else part)
+                whole = f"{previous}\n\n{part}" if previous else part
+                code = _official(whole) or typed_code(whole)
                 run, rc = None, 0
                 if runnable_python(code):
                     rc, out = run_code(code)
@@ -1627,10 +1717,17 @@ class Copilot:
                                       "state the decision instead")
                 if run is not None and rc == 0:  # corre, pero ¿imprime lo que promete la Prueba?
                     issues += output_mismatches(typed_code(part), out)
+                if brute and attempt == 0:
+                    issues.append(brute + ". Fix the algorithm (keep the names), and add this case to the Prueba "
+                                  "as an assert with the brute-force value.")
                 # Solo se edita con una senal concreta (investigacion 2026-10-17: un revisor sin senal
                 # externa empeora lo que estaba bien). Python que corre limpio (con sus asserts) y sin
                 # problemas de narracion: no se toca, ni se gasta la llamada.
                 if run is not None and rc == 0 and not issues:
+                    break
+                if not issues and not clean_code(part) and not clean_tests(part):
+                    # Sin codigo (solo el Entender con su pregunta, o un "Solo decir"): nada que revisar. Antes
+                    # el supervisor reescribia la pizarra entera y se saltaba la pregunta (grabacion 15:00).
                     break
                 system, user = supervisor_prompt(ans.question, render(tr)[-RECENT_CHARS:], previous, part, run,
                                                  issues)
@@ -1645,19 +1742,21 @@ class Copilot:
                 ans.editor_changed |= changed_lines(_join(base, part), _join(base, fixed))
                 part = fixed
                 ans.editor = _join(base, part)
-                ans.editor_check = "corregido"
+                corrected = True  # el estado sigue en "revisando" hasta el final: aun puede cambiar
                 self.on_editor(ans)
                 if run is None:
                     break  # nada que volver a ejecutar
                 # Solo se vuelve a preguntar al modelo si su correccion aun falla al ejecutarse
                 # (la segunda consulta era casi la mitad del tiempo y casi nunca hacia falta).
-                rc, out = run_code(typed_code(f"{previous}\n\n{part}" if previous else part))
+                whole = f"{previous}\n\n{part}" if previous else part
+                rc, out = run_code(_official(whole) or typed_code(whole))
                 if rc == 0:
                     break
-            if ans.editor_check != "corregido":
-                ans.editor_check = "ok"
-            if runnable_python(typed_code(f"{previous}\n\n{part}" if previous else part)):
-                rc, out = run_code(typed_code(f"{previous}\n\n{part}" if previous else part))
+            ans.editor_check = "corregido" if corrected else "ok"
+            whole =f"{previous}\n\n{part}" if previous else part
+            final = _official(whole) or typed_code(whole)
+            if runnable_python(final):
+                rc, out = run_code(final)
                 ans.editor_run = f"exit code {rc}\n{out}"
                 if rc != 0:
                     ans.editor_check = "error"
@@ -1669,6 +1768,28 @@ class Copilot:
         log.info("copiloto: supervisor en %.1fs | %s | %d lineas cambiadas", time.time() - t0, ans.editor_check,
                  len(ans.editor_changed))
         self.on_editor(ans)
+
+    def _brute_force_issue(self, ans: Answer, tr: Transcript, whole: str) -> str | None:
+        """Comprobacion con fuerza bruta (ejecutada, no opinada): un modelo escribe una version lenta pero
+        obviamente correcta desde los requisitos, y se compara con la funcion en casos pequenos al azar.
+        Grabacion 2026-10-18 09:59: el entrevistador encontro tres casos que la pizarra daba por buenos."""
+        code = clean_code(whole)
+        main = main_function(code)
+        if not main or not runnable_python(code) or self.supervisor_llm is None:
+            return None
+        spec = self._spec_since(tr, self._exercise_start(ans)) or ans.question
+        try:
+            system, user = reference_prompt(spec, code, main)
+            reference = re.sub(r"^```\w*\n|\n```\s*$", "", self._supervisor_reply(system, user).strip())
+            issue = cross_check(code, reference, main)
+            bad = check_asserts(clean_tests(whole), reference, main)
+            if bad:
+                issue = "; ".join(([issue] if issue else []) + bad)
+        except Exception:
+            log.exception("copiloto: fuerza bruta")
+            return None
+        log.info("copiloto: fuerza bruta | %s", issue or "coincide")
+        return issue
 
     def _board_now(self, ans: Answer) -> str:
         """Lo que hay en la pizarra para que AL VUELO hable de ello."""
@@ -1683,10 +1804,20 @@ class Copilot:
             return "", ""
         try:
             m = self.instant(question)
+            if m is None and (_INTRO_RE.search(question) or _BURNING_RE.search(question)):
+                # "preséntate" con otras palabras: la memorizada
+                m = self.instant("Tell me about yourself")
         except Exception:
             log.exception("copiloto: respuesta preparada")  # sin atajo, sigue el LLM
             return "", ""
         return (m.text, m.key) if m else ("", "")
+
+    def _memorized(self, key: str) -> bool:
+        """La preparada lleva la nota "(Memorized ...)": se da tal cual, sin AL VUELO."""
+        if not key or self.kb is None:
+            return False
+        head = re.compile(rf"^## {re.escape(key)} - .*\n\(Memorized\b", re.M)
+        return any(head.search(t) for t in self.kb.extra_texts().values())
 
     def _generate(self, ans: Answer, tr: Transcript, cancel: threading.Event) -> None:
         t_start = time.time()
@@ -1748,7 +1879,7 @@ class Copilot:
         if cancel.is_set():
             return
         ans.text, ans.done = for_reading(acc).strip(), True
-        if not ans.followup:
+        if not ans.followup and not self._board_now(ans):  # en un ejercicio son datos tecnicos, no de Yo
             ans.fact_flags = unsupported_facts(ans.text, self._notes_text())
         end = time.time()
         # Metricas por respuesta: de donde sale cada segundo.

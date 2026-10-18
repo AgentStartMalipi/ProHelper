@@ -54,15 +54,17 @@ def generate(llm, q: str, follow: str | None) -> tuple[str, int]:
         s, u = editor_prompt("Your call, go on.", conv, board, clarify=True)
         board += "\n\n" + _said_for_reading(llm.complete(s, u).strip())
         calls += 1
+    cut = len(board)  # donde empieza la respuesta a la repregunta
     if follow:
-        conv += f"\nYo: (finishes the code)\nEllos: {follow}"
+        conv +=f"\nYo: (finishes the code)\nEllos: {follow}"
         s, u = editor_prompt(follow, conv, board)
         board += "\n\n" + _said_for_reading(llm.complete(s, u).strip())
         calls += 1
-    return board, calls
+    return board, calls, cut
 
 
-def check(board: str, kind: str, follow: str | None) -> tuple[list[str], str]:
+def check(board: str, kind: str, follow: str | None, cut: int | None = None) -> tuple[list[str], str]:
+    cut = len(board) if cut is None else cut
     fails = []
     if not re.search(r"^\s*»", board, re.M):
         fails.append("sin frases rojas")
@@ -70,12 +72,12 @@ def check(board: str, kind: str, follow: str | None) -> tuple[list[str], str]:
         fails.append(f"{say_run(board)} lineas seguidas sin rojo")
     out = ""
     if kind == "python" or follow:
-        code = typed_code(board.split("## Cambio")[0] if follow else board)
+        code = typed_code(board[:cut] if follow else board)
         rc, out = run(code)
         if rc != 0:
             fails.append("el codigo copiado tal cual falla: " + (out.strip().splitlines() or ["?"])[-1][:120])
     if kind == "pseudo":
-        tail = board.split("## Cambio")[-1] if follow else board
+        tail = board[cut:] if follow else board
         typed = typed_code(tail)
         if re.search(r"^\s*(?:def |import |from \w+ import)", typed, re.M):
             fails.append("el pseudocodigo trae Python")
@@ -92,9 +94,9 @@ def main(argv: list[str]) -> None:
     for i in ids:
         q, follow, kind = CASES[i]
         t0 = time.time()
-        board, calls = generate(llm, q, follow)
+        board, calls, cut = generate(llm, q, follow)
         total += calls
-        fails, out = check(board, kind, follow)
+        fails, out = check(board, kind, follow, cut)
         ok += not fails
         rec = {"case": i, "q": q, "kind": kind, "pass": not fails, "fails": fails, "board": board, "run": out,
                "calls": calls, "secs": round(time.time() - t0, 1), "at": time.strftime("%Y-%m-%d %H:%M")}

@@ -3,17 +3,20 @@
 (Format: one spoken sentence per line, subject first, linked with simple words. Lines in
 parentheses are notes for the copilot and are never shown to read.)
 
-## tell_me_about_yourself - Tell me about yourself | Walk me through your background | Who are you
-I'm Maria, and I studied two degrees at Universidad de los Andes.
-They were Systems and Computer Engineering, and Chemical Engineering.
-Before Amadeus, I did a ten-month internship at AWS.
-Since April, I've been a Junior Cloud Support Engineer at Amadeus.
-I'm on a 24/7 follow-the-sun team that keeps travel platforms running on Linux and Kubernetes.
-What I like most there is the moment something breaks.
-I want to understand why, and decide fast if I can fix it or need to escalate it.
-Security is that same question, but with someone breaking it on purpose.
-That's where I want to grow.
-Since our first conversation, I've been going back over Puppet and how to trace what happens inside a container, the two topics I found hardest last time.
+## tell_me_about_yourself - Tell me about yourself | Walk me through your background | Who are you | Can you introduce yourself | Tell us a bit about yourself | Introduce yourself | Could you start by introducing yourself | Say a few words about who you are | A few words about yourself | Walk us through your path | Tell us about your background | Could you briefly present yourself | Present yourself
+(Memorized intro, about 50 seconds: give it exactly as written, never shorten or rephrase it.)
+I'm Maria. I have two degrees from Universidad de los Andes, in Systems and Computer Engineering and in Chemical Engineering.
+After finishing my studies, I did a ten-month internship at AWS.
+There, I built internal web tools used by more than 200 people.
+I also hold five AWS certifications, including Solutions Architect Associate.
+Since April, I've been a Junior Cloud Support Engineer at Amadeus, on a 24/7 team.
+I investigate production incidents on Linux, Kubernetes and OpenShift.
+I build the timeline from logs and metrics, find what changed, and escalate with evidence.
+I also wrote my own Python script to speed up the first checks.
+What matters for this role is that investigation habit.
+Since our first conversation, I've been closing my gaps, especially Puppet and tracing activity inside containers.
+Security asks the same question I answer every day: why did this break?
+Except that someone is breaking it on purpose.
 
 ## why_two_degrees - Why two degrees | Chemical and computing why both | Why both and what does any of it have to do with security | Why both chemical and computer engineering | Why did you study chemical engineering and computing
 Everyone asks me that, and I love answering it.
@@ -146,7 +149,7 @@ So I looked for changes on those users.
 That's how I found a user migration.
 The failures started about five minutes after it was deployed.
 
-## login_failure_case - Tell me about a recent incident | Give me a concrete example of an incident | How did you correlate the logs | What did the logs or timestamps show | What was the change that caused it | Who fixed it
+## login_failure_case - Tell me about a recent incident | Give me a concrete example of an incident | You say instinct, give me a concrete example | Give me a concrete example of that | How did you correlate the logs | What did the logs or timestamps show | What was the change that caused it | Who fixed it
 Last week, users at one airport couldn't log in to their backup environment in another region.
 I went to Splunk, to the logs of that region's Citrix NetScaler gateways.
 First, I checked the timeline.
@@ -164,7 +167,7 @@ So it was authentication, only for those users.
 Then I looked for the change.
 A migration of those accounts was deployed, and about five minutes later the failures started.
 After it, every attempt failed.
-I documented that as the likely cause, and the SRE team confirmed it.
+I documented that as the likely cause, and the SRE team confirmed the change and owned the fix.
 The accounts had moved to Keycloak, and the backup region didn't support it yet.
 (One more detail if they push on numbers: the failure counts were indexed events that looked duplicated, so I didn't report them as unique attempts. The only timing number to say is "about five minutes" between the deploy and the failures.)
 
@@ -224,7 +227,8 @@ And it connects to security.
 Authentication logs are exactly where you'd also see an attacker.
 It's the same skill, with a different intent.
 
-## third_party_link_down - How do you know if a problem is on your side or a third party's | Tell me about an incident caused by an external provider | What do you check first in an outage
+## third_party_link_down - How do you know if a problem is on your side or a third party's | Tell me about an incident caused by an external provider | What do you check first in an outage | Give me another example | Another incident apart from the login one | Do you have another example | A different incident | Give me another example, not the login one | Any other incident you handled | Another incident you handled
+(Only these facts. The failures DID show in our Splunk dashboard: never say our side or our logs were clean or had no errors; say nothing planned on our side explained them. Never invent who saw the errors, like customers at checkout, or numbers of payments.)
 A recent one was a payment alert.
 It said the link to one external payment provider was down, and card payments were timing out.
 My part was to check our side.

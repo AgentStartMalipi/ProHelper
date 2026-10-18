@@ -39,10 +39,11 @@ I would run the agent in noop mode first.
 It compares the machine with the catalog and reports what it would change, without changing anything.
 Then I would apply it on a test node or a small group, and only then to everything.
 
-## puppet_compromised_node - How would you use Puppet to spot a compromised node | Can Puppet help detect an attacker | Puppet and security monitoring
+## puppet_compromised_node - How would you use Puppet to spot a compromised node | Can Puppet help detect an attacker | Puppet and security monitoring | How do you know if a node has silently stopped applying the security configuration | How do you notice a node that stopped applying its configuration
 It can give a useful signal, but it is not a detection tool by itself.
 If the reports show Puppet correcting the same file or service again and again, someone or something keeps changing it.
 And a node that stops reporting is also worth checking.
+I've been reading about the Puppet run reports since our first interview, and this is where they help most.
 But an attacker with root can change things Puppet doesn't manage, or stop the agent, so I would combine it with host and network logs.
 
 ## container_compromise_trace - A pod looks compromised, what do you do | Last time your answer on containers was only about the network, what would you do differently now | Your container answer was only network, what would you add | How do you trace what happened inside the container | How would you investigate a compromised container | A pod is compromised, how do you trace what happened inside it | For that container traceability gap what would you collect beyond network logs | What would you log inside a container
@@ -215,11 +216,13 @@ With lsmod, and modinfo for the details.
 Security cares because a malicious kernel module is a rootkit.
 It runs with full privileges and can hide processes, files and connections.
 
-## kernel_allowlist - Blocklist vs allowlist of kernel modules, pros and cons | Allowlist or blocklist of kernel modules
+## kernel_allowlist - Blocklist vs allowlist of kernel modules, pros and cons | Allowlist or blocklist of kernel modules | How would you make sure a vulnerable module stays blocked on every node
 An allowlist is safer, because only known modules can load.
 But it can break rare hardware or drivers.
 So I would roll it out carefully: first only report, collect data, and only then block.
 A blocklist is easier, but it only stops what you already know is bad.
+To apply it on every node and keep it there, I would declare it in Puppet, by host group.
+Puppet was my weak spot last time, so I've been reading about it, and this is exactly where it fits.
 
 ## what_is_ebpf - What is eBPF and why is it useful for security | What is eBPF
 eBPF lets you run small, verified programs inside the kernel, without writing a kernel module.
@@ -231,6 +234,7 @@ Tools like Falco and Tetragon are built on it.
 In Liviu's slides from September, there's a five-step process I found useful.
 Identify, determine exposure, mitigate, remediate, verify.
 Mitigation comes first, like blocking the vulnerable kernel module, because the patch and the reboot take longer.
+To block it on every node and keep it blocked, I would declare it in Puppet, which I've been reading about.
 I also saw you're moving from a blocklist to an allowlist of kernel modules.
 How is the delayed blocking going?
 
@@ -504,14 +508,20 @@ Here, I would first read the team's existing Puppet code, to learn how things ar
 Then make small changes on a test node, with reviews from someone on the team.
 That's how I learned Splunk and Grafana at Amadeus, by using them on real incidents.
 
-## introduce_to_team - Could you introduce yourself to the rest of the team | Introduce yourself to the team | Most of them haven't met you | Introduce yourself to the team in two minutes
-I'm Maria. I studied two degrees at Universidad de los Andes, Systems and Computer Engineering, and Chemical Engineering.
-Before Amadeus, I did a ten-month internship at AWS.
-Since April, I've been a Junior Cloud Support Engineer at Amadeus, on a 24/7 follow-the-sun team that keeps travel platforms running on Linux and Kubernetes.
-What I like most there is the moment something breaks.
-I want to understand why, and decide fast if I can fix it or need to escalate it.
-Security is that same question, but with someone breaking it on purpose, and that's where I want to grow.
-Since our first conversation, I've been going back over Puppet and how to trace what happens inside a container, the two topics I found hardest last time.
+## introduce_to_team - Could you introduce yourself to the rest of the team | Introduce yourself to the team | Most of them haven't met you | Introduce yourself to the team in two minutes | Could you introduce yourself to the team, most of them haven't met you | Introduce yourself to the panel
+(Memorized intro, about 50 seconds: give it exactly as written, never shorten or rephrase it.)
+I'm Maria. I have two degrees from Universidad de los Andes, in Systems and Computer Engineering and in Chemical Engineering.
+After finishing my studies, I did a ten-month internship at AWS.
+There, I built internal web tools used by more than 200 people.
+I also hold five AWS certifications, including Solutions Architect Associate.
+Since April, I've been a Junior Cloud Support Engineer at Amadeus, on a 24/7 team.
+I investigate production incidents on Linux, Kubernetes and OpenShift.
+I build the timeline from logs and metrics, find what changed, and escalate with evidence.
+I also wrote my own Python script to speed up the first checks.
+What matters for this role is that investigation habit.
+Since our first conversation, I've been closing my gaps, especially Puppet and tracing activity inside containers.
+Security asks the same question I answer every day: why did this break?
+Except that someone is breaking it on purpose.
 
 ## code_conn_log_top - Given a Zeek conn.log print the top ten source IPs by number of connections | Top ten source IPs in a conn.log
 I would read the file line by line.
@@ -649,12 +659,13 @@ Every difference goes into a report, with the current value and the expected one
 To decide what to fix first, I would look at the risk and how many users it affects.
 And I would use report-only mode before changing anything.
 
-## security_vs_usability - Security versus usability, tell me about a decision where you had to balance them | A time you balanced security and usability | Security vs usability
-(The design is confirmed; a deliberate security-versus-usability decision is NOT confirmed. Do not invent intent or an outcome.)
-The closest example I have is my personal triage script at Amadeus.
-It uses my own signed-in browser session, with MFA, rather than a password stored in the script.
-That means it depends on me being signed in.
-It illustrates the trade-off, but I would not present it as a formal security decision I owned.
+## security_vs_usability - Security versus usability, tell me about a decision where you had to balance them | Tell me about a decision where you had to balance security and usability | Security versus usability, give me an example | A trade-off between security and convenience | A time you balanced security and usability | Security vs usability
+(Maria confirmed 2026-10-18: she chose this on purpose, and it is her only example. Personal script, small scale: never inflate it, no invented outcome.)
+A small one, from my own triage script at Amadeus.
+I needed it to read data from internal tools.
+I chose to use my own signed-in browser session, with MFA, instead of storing a password in the script.
+The cost is usability, it only works while I'm signed in.
+But no credential sits in a file, and that was worth it to me.
 
 ## misp_to_zeek - How would indicators from MISP reach Zeek | How does MISP feed Zeek | How do MISP indicators get into Zeek
 MISP exports its indicators as a feed, like IPs, domains and file hashes.
@@ -896,3 +907,55 @@ I'm ready to move from Colombia for it, because protecting open science is the w
 And I'm happy to take on-call and night shifts, they're part of owning real systems.
 Thank you for your time, across both rounds.
 
+## priorities_changed - Tell me about a time priorities changed suddenly | A time your priorities changed | Tell me about a time you had to adapt quickly | A time you had to take over someone else's work | Tell me about a time you helped a teammate under pressure
+(Maria, 2026-10-18: university team project, a web application. Grade scale in Colombia is out of 5. No names.)
+The situation was a university team project, a web application, and we had split all the work between us.
+In the middle of the holidays, one teammate, who was abroad, burned his computer, and he couldn't work anymore.
+He was the strongest of us, he had years of web experience, and he was the one who had organised the whole team.
+So my priority changed, from finishing my part to finishing his part too.
+It wouldn't have been fair for him to get a bad grade after everything he had done for the team.
+So what I did was build both parts in less than a day.
+It wasn't the perfect solution, but it worked, and we got 4.5 out of 5.
+I'm proud of it, because I didn't let him down.
+
+## bug_own_code - Tell me about a bug in your own code | Tell me about a bug in your own code that was hard to find | A hard bug you found in your code | A bug you couldn't find | Tell me about a time you debugged something hard | A time you were stuck on a bug
+(Maria, 2026-10-18: the course was DPOO, Diseño y Programación Orientada a Objetos, at Universidad de los Andes; a Book class. In English: Object-Oriented Design and Programming.)
+The situation was my Object-Oriented Design and Programming course at university, and my Book class just didn't work.
+I iterated again and again, and I couldn't find why.
+So I went to the professor, and he showed me how to step through it properly.
+After about an hour, we found it.
+There were two classes with the same name, one I had written, and one that had been created automatically by accident.
+What I learned is that I can't just accept whatever my tools generate, I have to check it.
+That was before AI, and it matters even more now, I review what an AI suggests before I use it.
+
+## barad_dur_exposed_services - How would you find exposed or insecure services across CERN | How would you find all web servers on CERN's network and what they run | How would you build an inventory of web services | What did you think of Barad-Dûr | What did you think of Dawid's slides
+(Maria read Dawid's Barad-Dûr slides, confirmed 2026-10-18. Facts only from the brief section. Cite it at most once in the interview.)
+I read your slides on Barad-Dûr, and that's the approach I would take.
+Start from DNS, not from IPs, because with virtual hosts one IP can serve many sites.
+Collect what each site runs, its certificate and its headers, and keep it searchable, with history.
+Then, when something like the Magento vulnerability comes out, it's one query to find every instance and tell the owners.
+What I liked most is the perceptual hashing of screenshots, it groups sites that look the same, even when the hostnames tell you nothing.
+
+## takeaway_first_interview - What did you take away from our first interview | What did you learn from the first round | What did you take from last time | What stayed with you from our first conversation
+(Confirmed: weak spots in round 1 were Puppet and tracing activity inside containers; she went back over both and read the items in the brief.)
+Two things.
+First, where my gaps were, Puppet, and what happens inside a container, not only on the network.
+So I went back over both, and I read your slides and Bulletin articles on those topics.
+Second, how your team works, you explain incidents openly to the whole lab.
+That made me want to be part of it even more.
+
+## cern_same_symptom_what_changes - Same symptom at CERN, what changes | What would be different at CERN | And if the same thing happened at CERN | Same login failures at CERN, what changes
+Two things change.
+First, the users are all over the world, and some log in through their home institute's account.
+So before assuming it's our change, I'd check if the failure is limited to one identity provider, one region or one service.
+Second, at CERN a sudden wave of login failures can also be an attack, like password spraying.
+So I'd look at the SSO logs.
+Many accounts failing from the same few IPs points to security, not to a bad change.
+And since services belong to many different owners, I'd go to the owner of the change instead of rolling it back myself.
+
+## lock_or_log_credential - What would you lock | What would you lock down | What would you log | What would you lock or log after rotating the credential
+(If the word is unclear, the first line is: "Sorry, did you say lock or log?")
+To lock it down, I'd allow the account only one access path.
+For example, only from the experiment's own servers, so a stolen copy doesn't work from anywhere else.
+To log it, I'd record every use of the new credential, with the source IP and the time.
+Then I'd alert on any use from outside that path.

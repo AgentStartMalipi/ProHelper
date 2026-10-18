@@ -132,7 +132,9 @@ def run_case(cid: str, rows, kb, brief, guide, index, cfg) -> dict:
     cop.stop()
     _, rest = split_warning(ans.text)
     said = _SOURCE.sub("", rest).strip()
-    fails = check(spec, said, ans.instant_key, ans.editor_on, ans.editor)
+    # Con un ejercicio abierto responde la pizarra (sin AL VUELO en paralelo): lo dicho son sus frases rojas.
+    spoken = said + " " + " ".join(line for _, lines in parse_editor(ans.editor) for k, line in lines if k == "say")
+    fails = check(spec, spoken.strip(), ans.instant_key, ans.editor_on, ans.editor)
     return {"case": cid, "q": target["q"], "pass": not fails, "fails": fails, "calls": calls,
             "secs": round(time.time() - t0, 1), "memoria": ans.instant_key, "said": said,
             "editor_on": ans.editor_on, "editor": ans.editor, "at": time.strftime("%Y-%m-%d %H:%M")}
