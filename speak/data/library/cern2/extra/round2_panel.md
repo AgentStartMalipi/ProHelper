@@ -41,7 +41,7 @@ Lo que se sabe de cada persona viene de sus charlas públicas; **qué preguntar�
 4. 🟢 "What's an IoC? Give three examples." → IP, dominio, hash de fichero (también URL, user agent).
 5. 🟡 "What is MISP and how do its IoCs reach Zeek?"
 6. 🟡 "Why put Kafka between sensors and storage?" → Desacopla, absorbe picos, varios consumidores.
-7. 🟡 "We see ~2.5 billion connections a day and tens of thousands of raw alerts. How do you get to a few dozen?" → Falsos positivos, agregar, correlacionar, enriquecer; revisar cada regla de ajuste.
+7. 🟡 "We see ~3.5 billion connections a day and tens of thousands of raw alerts. How do you get to a few dozen?" → Falsos positivos, agregar, correlacionar, enriquecer; revisar cada regla de ajuste.
 8. 🟡 "Traffic is encrypted and we don't decrypt it. What can you still detect?" → Metadatos, DNS, SNI, certificados, JA3/JA4, beaconing.
 9. 🟡 "A pod looks compromised. How do you trace what happened inside the container?" → Eventos runtime con usuario, proceso/padre, ejecutable, argumentos y hora; identidad host/contenedor; reconstruir árbol y centralizar. Correlacionar con app y auditoría API, que no registra todos los comandos internos. Verificar contención y preservar evidencia.
 10. 🟡 "Which fields would you log for every command executed on a host, and why?" → uid, euid, pid, ppid, binario, argumentos, tty, hora, host. Así reconstruyes quién lanzó qué y desde qué proceso padre.
@@ -108,7 +108,7 @@ def unexpected_modules(allowlist_path="allowlist.txt"):
 ---
 
 ## 3. José Carlos Luna Durán (análisis, IA, forense, WLCG) (21)
-1. 🟢 "What is the WLCG and why is its security hard?" → Red mundial de computación del LHC con más de 150 sitios en muchos países; cada sitio tiene sus administradores; un sitio comprometido afecta a todos.
+1. 🟢 "What is the WLCG and why is its security hard?" → Red mundial de computación del LHC con unos 170 centros de cálculo en más de 40 países; cada sitio tiene sus administradores; un sitio comprometido afecta a todos.
 2. 🟢 "What security risks do you see in people using AI tools at CERN?" → Fuga de datos, prompt injection, agentes con demasiados permisos, código generado inseguro, paquetes inventados, phishing con IA.
 3. 🟡 "Explain prompt injection to a physicist."
 4. 🟡 "You built a multi-agent prototype. How would you secure it if it went to production?" → Mínimas herramientas por agente, sin secretos en el prompt, validar entradas y salidas, logs de cada llamada, humano para acciones con impacto. Recuerda: fue un **prototipo**.

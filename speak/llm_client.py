@@ -302,6 +302,8 @@ class ClaudeCLIClient(LLMClient):
             elif not got_delta and proc.returncode not in (0, None):
                 drain.join(timeout=2)
                 err = "".join(err_lines).strip()[-400:]
+                if not err:  # sin mensaje: casi siempre es la red (grabacion 2026-10-18 20:53, Deepgram tambien caido)
+                    raise LLMError(f"claude termino con codigo {proc.returncode} sin mensaje: probablemente sin internet")
                 raise LLMError(f"claude termino con codigo {proc.returncode}: {err}")
         finally:
             timer.cancel()
@@ -333,6 +335,112 @@ class AnthropicClient(LLMClient):
                 yield text
 
 
+_API_URL = "https://api.anthropic.com/v1/messages"
+_PROJECT_ENV = Path(__file__).resolve().parent.parent / ".env"
+
+
+def fallback_api_key(cfg, project_env: Path = _PROJECT_ENV) -> str:
+    """API_KEY de speak/.env o, si no hay, ANTHROPIC_API_KEY del .env del proyecto (SCREEN)."""
+    if cfg.API_KEY.strip():
+        return cfg.API_KEY.strip()
+    if os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        return os.environ["ANTHROPIC_API_KEY"].strip()
+    if project_env.exists():
+        for raw in project_env.read_text(encoding="utf-8").splitlines():
+            key, sep, value = raw.strip().partition("=")
+            if sep and key.strip() == "ANTHROPIC_API_KEY":
+                return value.strip().strip("\"'")
+    return ""
+
+
+class AnthropicHTTPClient(LLMClient):
+    """La API de Anthropic con streaming (SSE) y la libreria estandar, sin SDK:
+    el mismo enfoque que helper/api_client.py de SCREEN."""
+
+    def __init__(self, model: str, api_key: str, effort: str = "low", max_tokens: int = 2000,
+                 timeout: float = 60.0) -> None:
+        if not api_key:
+            raise LLMError("sin API key para el respaldo (API_KEY o ANTHROPIC_API_KEY)")
+        self.model, self._key, self.effort = model, api_key, effort
+        self.max_tokens, self.timeout = max_tokens, timeout
+
+    def stream(self, system, prompt, cancel=None, images=None):
+        import urllib.error
+        import urllib.request
+
+        content = ([image_block(p) for p in images] + [{"type": "text", "text": prompt}]) if images else prompt
+        body = {"model": self.model, "max_tokens": self.max_tokens, "stream": True, "system": system,
+                "messages": [{"role": "user", "content": content}],
+                "output_config": {"effort": self.effort or "low"}}
+        req = urllib.request.Request(_API_URL, data=json.dumps(body).encode("utf-8"), method="POST", headers={
+            "x-api-key": self._key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
+        try:
+            resp = urllib.request.urlopen(req, timeout=self.timeout)
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = json.loads(exc.read().decode("utf-8"))["error"]["message"]
+            except Exception:
+                detail = str(exc.reason)
+            raise LLMError(f"API de Anthropic {exc.code}: {detail[:200]}") from None
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise LLMError(f"no pude conectar con la API de Anthropic: {exc}") from None
+        with resp:
+            for raw in resp:
+                if cancel is not None and cancel.is_set():
+                    return
+                line = raw.decode("utf-8").strip()
+                if not line.startswith("data:"):
+                    continue
+                ev = json.loads(line[5:].strip() or "{}")
+                if ev.get("type") == "content_block_delta" and ev["delta"].get("type") == "text_delta":
+                    yield ev["delta"]["text"]
+                elif ev.get("type") == "error":
+                    raise LLMError(f"API de Anthropic: {ev.get('error', {}).get('message', 'error')}")
+
+
+class FallbackLLM(LLMClient):
+    """El CLI primero; si falla antes de escribir nada, la misma llamada por la API.
+
+    Tras un fallo del CLI se queda en la API `stick_s` segundos (el limite de la
+    sesion no se arregla en la siguiente pregunta) y luego vuelve a probar el CLI."""
+
+    def __init__(self, primary: LLMClient, backup_factory, stick_s: float = 600.0,
+                 on_switch=None) -> None:
+        self.primary, self._factory, self.stick_s = primary, backup_factory, stick_s
+        self._backup: LLMClient | None = None
+        self._until = 0.0
+        self.on_switch = on_switch  # aviso a la UI: "copiloto por la API"
+
+    def _get_backup(self) -> LLMClient:
+        if self._backup is None:
+            self._backup = self._factory()
+        return self._backup
+
+    def stream(self, system, prompt, cancel=None, images=None):
+        if time.time() >= self._until:
+            got = False
+            try:
+                for chunk in self.primary.stream(system, prompt, cancel, images):
+                    got = got or bool(chunk)
+                    yield chunk
+                return
+            except LLMError as exc:
+                if got or (cancel is not None and cancel.is_set()):
+                    raise
+                log.warning("CLI fallo (%s): sigo por la API de Anthropic", exc)
+                self._until = time.time() + self.stick_s
+                if self.on_switch:
+                    self.on_switch(f"Claude Code fallo ({str(exc)[:80]}); respondo por la API")
+        yield from self._get_backup().stream(system, prompt, cancel, images)
+
+    def warm(self, system: str) -> None:
+        if time.time() >= self._until:
+            self.primary.warm(system)
+
+    def close(self) -> None:
+        self.primary.close()
+
+
 class FakeLLM(LLMClient):
     """Devuelve una respuesta fija en trozos. Guarda las llamadas."""
 
@@ -353,7 +461,12 @@ def make_llm(cfg, prewarm: bool = False, effort: str = "", model: str = "") -> L
     `effort`: otro esfuerzo que el de LLM_EFFORT (la pizarra pide mas)."""
     provider = cfg.LLM_PROVIDER.strip().lower()
     if provider == "claude_cli":
-        return ClaudeCLIClient(model or cfg.LLM_MODEL, effort or cfg.LLM_EFFORT, prewarm=prewarm)
+        cli = ClaudeCLIClient(model or cfg.LLM_MODEL, effort or cfg.LLM_EFFORT, prewarm=prewarm)
+        key = fallback_api_key(cfg) if getattr(cfg, "API_FALLBACK", False) else ""
+        if not key:
+            return cli
+        return FallbackLLM(cli, lambda: AnthropicHTTPClient(
+            cfg.API_FALLBACK_MODEL, key, effort or cfg.LLM_EFFORT))
     if provider == "anthropic":
         return AnthropicClient(cfg.LLM_MODEL, cfg.API_KEY)
     if provider == "fake":

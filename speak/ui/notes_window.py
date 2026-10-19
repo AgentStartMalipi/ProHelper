@@ -827,7 +827,10 @@ class NotesWindow(QMainWindow):
                                   + " — compruébalo antes de decirlo*")
             if a.timed_out and not a.text:
                 # El LLM no llego a tiempo: solo MEMORIA; sin ella, un aviso.
-                blocks = [] if a.instant else ["*⌛ AL VUELO no llegó a tiempo. F8 para reintentar.*"]
+                blocks = [] if a.instant else [
+                    "**⌛ SIN RESPUESTA para esta pregunta** (¿se cayó internet?). Mientras tanto di: "
+                    "*\"Sorry, could you repeat the question?\"* — F8 para reintentar. "
+                    "**Lo de abajo es de la pregunta ANTERIOR: no lo leas.**"]
             if a.memorized:  # te la sabes de memoria: solo MEMORIA, entera
                 blocks = []
             if a.board_only:  # ejercicio: todo en la pizarra, paso a paso

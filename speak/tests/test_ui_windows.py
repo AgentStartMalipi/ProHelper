@@ -1011,7 +1011,7 @@ class AnswerBlockTests(unittest.TestCase):
                                "The credentials lived in the vault.\nFuente: [prepared_answers]", "léela")
         lines = out.split("  \n")
         self.assertEqual(lines[1], "*⚠ Auth method not in your sources. — aviso para ti, no lo leas*")
-        self.assertEqual(lines[2:5], ["“Sure, it was Azure *(á-shur)* Key Vault.", "The credentials lived in the vault.”",
+        self.assertEqual(lines[2:5], ["“Sure, it was Azure *(á-shur)* Key Vault *(kíi volt)*.", "The credentials lived in the vault.”",
                                       "Fuente: [prepared_answers]"])
         self.assertIn("“One line.”", nw._answer_block("MEMORIA", "k", "One line.", "x"))
         self.assertIn("  \n…  \n", nw._answer_block("AL VUELO", "", "", "x"))  # aun sin texto: sin comillas

@@ -1872,6 +1872,15 @@ class Copilot:
         except Exception as exc:
             log.exception("copiloto: respuesta")
             self.on_status(f"copiloto: {exc}")
+            with guard:
+                if cancel.is_set():
+                    return  # tiempo agotado (aviso ya en pantalla) o la reemplazo otra pregunta
+                cancel.set()
+                # Sin esto la pregunta se quedaba en espera y lo de pantalla era la respuesta
+                # ANTERIOR (grabacion 2026-10-18 23:24: leyo la de la credencial para el RCE).
+                ans.text = for_reading(acc).strip()
+                ans.timed_out, ans.done = not ans.text, True
+            self.on_answer(ans)
             return
         finally:
             if timer:

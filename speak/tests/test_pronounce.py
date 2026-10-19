@@ -12,6 +12,13 @@ class PronounceTests(unittest.TestCase):
         self.assertEqual(pronounce("New CVEs every day"), "New CVEs (si-vi-í) every day")
         self.assertEqual(pronounce("piping kubectl into grep"), "piping kubectl (kiúb-kon-trol) into grep")
 
+    def test_command_flags(self):
+        self.assertEqual(pronounce("run ps auxf and ls -la"),
+                         "run ps (pi-és) auxf (éi-iu-eks-éf) and ls (el-és) -la (dash el-éi)")
+        self.assertEqual(pronounce("pods -A --no-headers"), "pods -A (dash éi) --no-headers (dash dash no headers)")
+        self.assertEqual(pronounce("find / -perm"), "find / -perm (dash perm)")
+        self.assertEqual(pronounce("a well-known e-mail - and a re-run"), "a well-known e-mail - and a re-run")
+
     def test_not_inside_other_words(self):
         self.assertEqual(pronounce("my-sudo-file and pseudo"), "my-sudo-file and pseudo")
 

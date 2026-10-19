@@ -190,6 +190,23 @@ class InstantAndEagerCopilotTests(unittest.TestCase):
         self.assertEqual(ans.text, "")
         self.assertIn("Solutions Architect", cop.render_log())  # en copilot.md queda MEMORIA
 
+    def test_llm_failure_marks_the_question_unanswered(self):
+        # Sin internet el CLI sale con codigo 1 al instante: la pregunta no puede quedarse
+        # en espera con la respuesta anterior en pantalla (grabacion 2026-10-18 23:24).
+        from speak.llm_client import LLMError
+
+        class DeadLLM:
+            def stream(self, system, user, cancel=None):
+                raise LLMError("claude termino con codigo 1 sin mensaje: probablemente sin internet")
+                yield ""
+
+        cop = self.make([Segment(1, 4, "What is the timeline for the rollout?", THEM)], now=6.0,
+                        llm=DeadLLM(), live_timeout_s=5)
+        ans = cop.step()
+        self.assertTrue(wait_for(lambda: ans.done, timeout=1))
+        self.assertTrue(ans.timed_out)
+        self.assertEqual(ans.text, "")
+
     def test_live_timeout_does_not_cut_an_answer_that_started(self):
         cop = self.make([Segment(1, 4, "What is the timeline for the rollout?", THEM)], now=6.0,
                         llm=SlowLLM(first_after=0.05, rest_after=0.5), live_timeout_s=0.2)
@@ -217,6 +234,20 @@ class InstantAndEagerCopilotTests(unittest.TestCase):
                          "why_not_stay_at_aws")
         self.assertIsNone(idx.match("Why didn't you stay at AWS? What did your manager think about it?"))
         self.assertIsNone(idx.match("What experience are you most proud of in security work at CERN?"))
+
+    def test_trailing_give_me_an_example_belongs_to_the_question_before(self):
+        # Simulacro 2026-10-18 12:26: "What is SSRF...? Give me one concrete example." saco la historia
+        # del login porque su titulo incluye "Give me a concrete example of that".
+        from speak.notes.instant import PreparedIndex
+
+        prep = ("## login_failure_case - Tell me about a recent incident | Give me a concrete example of that\n"
+                "Last week, users at one airport couldn't log in.\n")
+        idx = PreparedIndex({"p": prep}, min_score=0.9, min_precision=0.75)
+        self.assertIsNone(idx.match("Let's move to web security. What is SSRF and why can it be dangerous "
+                                    "in a cloud environment? Give me one concrete example."))
+        self.assertEqual(idx.match("Okay. Give me a concrete example of that.").key, "login_failure_case")
+        self.assertEqual(idx.match("So what did you do? Give me a concrete example of that.").key,
+                         "login_failure_case")
 
     def test_broken_instant_matcher_does_not_block_the_answer(self):
         def boom(_q):

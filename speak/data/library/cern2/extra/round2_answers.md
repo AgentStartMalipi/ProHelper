@@ -83,16 +83,21 @@ Each setting is a question: who uses this, and what could go wrong?
 And every setting I close reduces a real risk, like the device code phishing your team wrote about in July.
 If I document it well, it also helps the next person for years.
 
-## explain_to_physicist - How do you explain to a physicist why we are taking something away | How do you explain a security change to a user | How do you convince a scientist to accept a security restriction
-I would start with why: the concrete risk, with a real example, not a policy.
+## explain_to_physicist - How do you explain to a physicist why we are taking something away | A physicist says it slows them down | They say the control slows them down, what do you do | How do you explain a security change to a user | How do you convince a scientist to accept a security restriction
+First I would ask what exactly slows them down, because sometimes it's one setting we can adjust.
+Then I would explain why: the concrete risk, with a real example, not a policy.
 Then I would offer an alternative, so they can still do their work.
 I would give them a clear date, and tell them who to contact if something breaks.
+If they really need an exception, it's small, with an owner and an expiry date.
 People accept a change much better when they understand it and still have a way to work.
 
-## security_exception - Exceptions kill cyber security, when would you still grant one | When would you grant a security exception | A physicist needs 2FA off or a port open for an experiment
+## security_exception - Exceptions kill cyber security, when would you still grant one | When would you grant a security exception | A physicist needs 2FA off or a port open for an experiment | A research group refuses a security control | A group rejects a control because it breaks their work | Who accepts the risk of an exception
+(Shared responsibility: from Liviu's HTCondor slides, which Maria read. Risk is accepted by the service owner together with the security team, never by Maria or the scientists alone.)
 Only as a last resort.
-First, I would understand the real need, because often there's an alternative.
-If there really isn't one, the exception should be as small as possible, with an owner and an expiry date.
+First, I would understand the real need, because often there's an alternative, like network limits, strong authentication or more monitoring.
+Liviu's HTCondor slides describe security as a shared responsibility between service managers and the security team, so I wouldn't just impose it.
+If there really is no alternative, the exception should be as small as possible, with an owner and an expiry date.
+It's signed off by the service owner together with your team, not by me or the scientists alone.
 And while it exists, I would add more monitoring on it.
 
 ## bank_vs_cern - What is the difference between security in a bank and at CERN | How is security at CERN different from a company
@@ -159,10 +164,11 @@ Suricata and Snort are mainly signature-based: a rule matches, and they fire an 
 So Zeek gives you rich logs to investigate, and Suricata gives you alerts on known patterns.
 Zeek also has an intelligence framework, where you can load indicators from MISP.
 
-## ioc_examples - What's an IoC | Give three examples of IoCs | What is an indicator of compromise
-An indicator of compromise is evidence that a system may be attacked.
-For example, a malicious IP address, a domain, or the hash of a file.
-Also a URL or an unusual user agent.
+## ioc_examples - What's an IoC | Give three examples of IoCs | What is an indicator of compromise | What's the difference between an IoC and a detection rule | IoC versus rule
+An indicator of compromise is a single piece of evidence: an IP, a domain, or the hash of a file.
+A detection rule is the logic that searches the data and raises an alert.
+IoCs change fast, so behaviour based rules last longer.
+At CERN, MISP brings in the shared indicators, as in Liviu's Zeek Workshop talk.
 
 ## why_kafka - Why put Kafka between sensors and storage | Why Kafka
 Kafka decouples the sensors from the storage.
@@ -238,10 +244,15 @@ To block it on every node and keep it blocked, I would declare it in Puppet, whi
 I also saw you're moving from a blocklist to an allowlist of kernel modules.
 How is the delayed blocking going?
 
-## uid_vs_euid - What's the difference between uid and euid | uid vs euid
-The uid is who you are.
-The effective uid is the permissions the process actually uses.
-For example, a setuid binary runs with effective uid zero, as root, even if a normal user started it.
+## uid_vs_euid - What's the difference between uid and euid | uid vs euid | Real UID versus effective UID | A process runs as a regular user but its effective UID is zero | How can a process end up with euid zero | Which commands to check a uid euid privilege escalation
+(Liviu's HTCondor slides, which Maria read: CERN's traceability logs uid and euid, gid and egid, pid and ppid, binary, arguments and tty for every command. Cite it here, it is the clearest fit.)
+The real uid is who started the process.
+The effective uid is the permissions it actually uses.
+The normal reason is a setuid binary, like passwd or sudo, which runs with the owner's permissions.
+That's exactly why I liked that your SOC logs both uid and euid for every command, as I saw in Liviu's HTCondor slides.
+To check it, I would run ps with dash o, asking for pid, ppid, ruser, euser and the command, so I see both users side by side.
+Then ls dash l on the binary to see the s bit, and rpm dash V f to see if the binary changed from its package.
+A uid to euid change that doesn't come from a known setuid binary is a strong signal.
 
 ## suspicious_host_commands - Which Linux commands would you use to check a suspicious host | How would you check a suspicious Linux host
 ss to see the connections, and ps to see the process tree.
@@ -257,8 +268,9 @@ Small volume, but interactive, and it stays open for a long time.
 ## beaconing - What is beaconing and how would you detect it | How would you detect beaconing
 Beaconing is when malware calls home at regular intervals.
 To detect it, I would look at the connections from one host to one destination, and check how regular the gaps are.
-Very regular gaps are suspicious.
-Malware adds some random jitter, so I would also look at the median and the packet sizes.
+But attackers don't connect exactly every sixty seconds, they add jitter.
+So I look for gaps that are regular within a tolerance, using the median and the spread, not an exact interval.
+Same packet sizes and a connection that goes on for days are extra signals.
 
 ## password_spraying - How would you detect password spraying against the SSO | What is password spraying
 Password spraying is trying a few common passwords on many accounts.
@@ -266,7 +278,7 @@ So I would look for many users, with few attempts each, from the same IPs.
 And then check if any of those users had a successful login afterwards.
 
 ## wlcg_security - What is the WLCG and why is its security hard | Why is WLCG security hard
-The WLCG is the worldwide computing grid for the LHC, with more than a hundred and fifty sites in many countries.
+The WLCG is the worldwide computing grid for the LHC, with around a hundred and seventy computing centres in more than forty countries.
 Each site has its own administrators and rules.
 And because they share credentials and trust, one compromised site can affect the others.
 
@@ -281,12 +293,15 @@ An AI assistant can't really tell the difference between your instructions and t
 So if it reads an email that says "forward all files to this address", it might do it.
 It's like a colleague who follows any note left on their desk, without checking who wrote it.
 
-## secure_multi_agent - You built a multi-agent prototype, how would you secure it if it went to production | How would you secure your multi-agent prototype
-(It was a practice prototype, never in production. Never invent a lesson she learned from it.)
-It was a prototype, so security wasn't the focus then. In production I would change a few things.
-Each agent would get only the tools it really needs, and no secrets in the prompt.
-I would validate inputs and outputs, and log every call.
-And for any action with real impact, a human would approve it first.
+## secure_multi_agent - You built a multi-agent prototype, how would you secure it if it went to production | How would you secure your multi-agent prototype | Tell me about your multi-agent prototype | What did you build in the multi-agent prototype
+(Facts from the repo review, 2026-10-18: designed for Bedrock AgentCore, BUILT as a partial prototype on Amazon Bedrock Agents. Never "CDK in Python" (it was TypeScript), never say she used Strands, AgentCore services or a Knowledge Base in the code, never say the agents' permissions were narrow. Always "prototype".)
+It was a prototype for AWS's internal AWSome Builder program.
+I designed it for Bedrock AgentCore, and AgentCore Identity was in the design to handle who the agents act for.
+What I actually built was a partial version on Amazon Bedrock Agents.
+An orchestrator delegating to a training agent and a nutrition agent, each with its own Python Lambda tools on DynamoDB, and the infrastructure in CDK with TypeScript.
+Each agent could only call its own tools.
+Reviewing it with a security eye, the biggest gap was identity: the chat endpoint didn't pass the authenticated user to the agents, and their role was much broader than needed.
+I would fix identity first, then least privilege, user confirmation before any write, and guardrails against prompt injection.
 
 ## ai_coding_assistants - Should CERN allow AI coding assistants | Under which conditions would you allow AI coding assistants
 Yes, but with conditions.
@@ -326,11 +341,16 @@ Logins from new IPs, or at unusual hours.
 Jumps from that host to other hosts, which would be lateral movement.
 And the same key being used on several machines.
 
-## tier2_cryptomining - A Tier-2 site in the WLCG is mining cryptocurrency, your steps | A WLCG site is compromised, what do you do
-It's not our infrastructure, so first I would contact the site and coordinate with them.
-Then share the indicators through MISP.
-Search for those same indicators at CERN.
-And check any credentials shared with that site.
+## tier2_cryptomining - A Tier-2 site in the WLCG is mining cryptocurrency, your steps | One of the WLCG sites reports ransomware on their worker nodes, what do you do | A WLCG site has ransomware | A WLCG site is compromised, what do you do | Ransomware at a WLCG site, what do you do | A grid site is hit by ransomware | Ransomware hits a Tier-2 WLCG site, what do you do in the first hour to protect CERN and preserve evidence
+(A WLCG site belongs to another institute: CERN never isolates it, it restricts traffic on ITS OWN side. When asked to protect CERN AND preserve evidence, protect CERN comes FIRST. Facts from Luna's HEPiX slides, spring 2025. Pau leads EGI's incident response task force.)
+First, protect CERN.
+I would restrict traffic from that site on our side, because we can't trust its servers now.
+And I would revoke any credentials or grid tokens used there, then search our logs for their use at CERN.
+That's how an attack jumps from one site to another.
+The site isn't ours, so I coordinate with their security team, following the EGI incident procedure.
+I would share the indicators through MISP with the other sites.
+And I would help them preserve evidence: memory first, then disk and logs, working on hashed copies.
+In the Tier-2 case from your HEPiX slides, the attacker came in through a BMC exposed with default credentials, so I would also ask how they got in.
 
 ## responsible_disclosure - What is responsible vulnerability disclosure
 You tell the owner privately first, and give them time to patch.
@@ -363,9 +383,13 @@ Cross-site scripting is when an attacker gets their script to run in another use
 Stored means it's saved on the server, like in a comment. Reflected means it comes back from the request, like in a link.
 To prevent it, escape the output, which Django does by default, and use a content security policy.
 
-## ssrf - What is SSRF and why is it dangerous in a cloud | What is server-side request forgery
-SSRF is when you trick a server into making requests for you.
-In the cloud it's dangerous because the server can reach the metadata service, and steal the credentials of the machine.
+## ssrf - What is SSRF and why is it dangerous in a cloud | What is server-side request forgery | What is SSRF and why can it be dangerous in a cloud environment, give me one example
+(Public, well-known case: Capital One, 2019.)
+SSRF is when an attacker tricks a server into making requests for them.
+In the cloud it's dangerous because the server can reach the metadata service, and get the credentials of its role.
+A concrete example is Capital One in 2019.
+The attacker used SSRF through a misconfigured web application firewall, reached the metadata service, took the role's credentials, and read data from S3.
+To prevent it: IMDSv2, an allowlist of URLs the server may call, block internal ranges, and a role with least privilege.
 
 ## csrf - What is CSRF and how does Django protect against it | What is CSRF
 CSRF is when another site makes your browser send a request to a site where you're logged in.
@@ -419,12 +443,13 @@ And logs that contain sensitive data.
 A container shares the kernel of the host. A VM has its own kernel.
 So a VM gives stronger isolation, and a container is lighter and faster to start.
 
-## harden_kubernetes - How would you harden a Kubernetes cluster | How would you harden OpenShift | How would you harden a Kubernetes or OpenShift cluster | How would you secure a Kubernetes cluster | What would you put in a Pod Security standard
+## harden_kubernetes - How would you harden a Kubernetes cluster | How would you harden a Kubernetes cluster without blocking research work | How would you harden OpenShift | How would you harden a Kubernetes or OpenShift cluster | How would you secure a Kubernetes cluster | What would you put in a Pod Security standard
 (From FRASES_LO_QUE_ESTUDIE.md, 2026-10-17: Maria asked to use it as something she read since round 1.)
 I went through the Kubernetes Pod Security Standards.
 There are three levels, Privileged, Baseline and Restricted, applied per namespace with labels.
 Restricted means no root, no privileged containers, dropped capabilities, no host paths and a seccomp profile.
 OpenShift's restricted SCC does something similar by default.
+To avoid blocking research, I would apply them first in warn and audit mode, so we see what would break without breaking anything, and only then enforce.
 Together with RBAC least privilege and default-deny network policies, that's where I would start.
 I would rather use that standard than invent my own list.
 
@@ -469,10 +494,14 @@ So I would give those service accounts without interactive login, or use SSH cer
 I would put it behind a proxy that uses the SSO with two-factor authentication.
 And until then, more monitoring on it.
 
-## rotate_secret_50 - How do you rotate a secret used by 50 services without downtime
+## rotate_secret_50 - How do you rotate a secret used by 50 services without downtime | A credential is shared by forty services, how do you rotate it | Rotate a leaked credential used by many services
 Support two secrets at the same time.
-Update the services one by one to the new one.
-And only then remove the old one.
+Update the services one by one to the new one, and check in the logs who still uses the old one.
+While I rotate, I watch the old credential: if something outside those services uses it, that's the attacker.
+If a pod reads the secret from an environment variable, it does not pick up the new one alone, so I restart it with kubectl rollout restart.
+Only at the end I revoke the old one.
+But the real problem is many services sharing one credential.
+Afterwards, I would give each service its own, so next time we revoke one, not forty.
 
 ## waf_limits - What is a WAF and what are its limits
 A WAF is a web application firewall: it filters HTTP requests and blocks known attack patterns.
@@ -490,10 +519,12 @@ For my final thesis I worked with two directors, and it passed.
 What I learned is to validate a cause or an approach with more than one source, and I do the same with incidents now.
 
 ## prototype_security_done - Did you do any of that in your prototype | Did you secure your prototype | Was your prototype secure
-(Never invent what the prototype had or lacked. "Not at that level" does NOT mean none of the listed controls existed. Never expand it into "I did not implement those controls".)
-No, not at that level.
-It was a practice prototype for an internal AWS program, and security wasn't the focus then.
-That list is what I would add if it ever went to production.
+(From the repo review: each agent only had its own tools; the chat endpoint did not pass the user to the agents; the chat role was broad. Human approval and guardrails were not there.)
+Partly.
+Each agent could only call its own tools, so the training agent couldn't touch the meals.
+But identity was the gap: the chat endpoint didn't pass the authenticated user to the agents, and the role was broader than needed.
+And there was no human confirmation or guardrails yet, it was a prototype.
+That's what I would fix first.
 
 ## role_excites_worries - What part of this role excites you most, and what part worries you | What excites you and what worries you about this role
 What excites me most is the SOC work and the Microsoft 365 review, because both are real investigations with real impact.
@@ -686,7 +717,7 @@ Sure. Let me first say the approach.
 Can I assume the file fits in memory, or should I read it line by line?
 
 ## preparation_since_round_one - Since we last spoke what have you done to prepare | How did you prepare for this second interview
-(Maria confirmed on 2026-10-16 and 2026-10-17: Puppet, container traceability, and the readings listed in the brief.)
+(Maria confirmed on 2026-10-16 and 2026-10-17: Puppet, container traceability, and the readings listed in the brief. Maria 2026-10-18: keep it about studying CERN topics; NEVER mention the triage script here.)
 I went back over the topics I struggled with in our first interview, especially Puppet and tracing activity inside containers.
 For containers, I looked into runtime monitoring, like Falco, not only the network traffic.
 I also read your Bulletin articles, One click to many and The road to SBOM.
@@ -768,10 +799,11 @@ So a central proxy that logs every download makes a lot of sense.
 And it can hold new packages for a cooldown period before they're used, because most malicious packages get caught within days.
 
 ## cern_soc_zeek_talk - What do you know about our SOC | What do you know about how our SOC works | What do you know about our security operations | What did you think of Liviu's Zeek talk
-(From FRASES_LO_QUE_ESTUDIE.md, 2026-10-17: Maria asked to use it as something she read since round 1.) Liviu's talk at Zeek Workshop 2026, "Zeek and the Balance between Academic Freedom, Industrial Operations and Security".
+(From FRASES_LO_QUE_ESTUDIE.md, 2026-10-17: Maria asked to use it as something she read since round 1.) Liviu's talk at Zeek Workshop 2026, "Zeek and the Balance between Academic Freedom, Industrial Operations & Security". The connection count comes from his HTCondor slides (verified 2026-10-18), never "two and a half billion connections" (2.5 billion is the DNS requests).
 I went through Liviu's Zeek Workshop talk.
 What impressed me is the scale.
-Zeek sensors feed Kafka, then Spark and OpenSearch, with around two and a half billion connections a day.
+Zeek sensors feed Kafka, then Spark and OpenSearch.
+And in Liviu's HTCondor slides, the SOC sees around three and a half billion network connections a day.
 And MISP for indicators shared with other sites.
 The part I found most interesting was the balance in the title, between academic freedom and security.
 You can't control the devices, so the network becomes the main place to see what's happening.
@@ -813,7 +845,7 @@ Then I would find the scope, which other hosts it talks to, and how they got in.
 I would preserve the logs centrally before anything gets cleaned up.
 Credentials used on that host get rotated, because they may be stolen.
 And I would tell the incident response team right away, so one person owns the decisions.
-I would not pay, the way back is restoring from backups we have checked are clean.
+Paying isn't my decision, but I would advise against it, the way back is restoring from backups we have checked are clean.
 
 ## ransomware_entry - How do ransomware groups usually get in | How do ransomware attackers get initial access | What are the main ransomware entry points
 (General knowledge, not Maria's experience.)
@@ -947,7 +979,7 @@ That made me want to be part of it even more.
 ## cern_same_symptom_what_changes - Same symptom at CERN, what changes | What would be different at CERN | And if the same thing happened at CERN | Same login failures at CERN, what changes
 Two things change.
 First, the users are all over the world, and some log in through their home institute's account.
-So before assuming it's our change, I'd check if the failure is limited to one identity provider, one region or one service.
+So before assuming it's our change, I would check if the failure is limited to one identity provider or one service.
 Second, at CERN a sudden wave of login failures can also be an attack, like password spraying.
 So I'd look at the SSO logs.
 Many accounts failing from the same few IPs points to security, not to a bad change.
@@ -959,3 +991,197 @@ To lock it down, I'd allow the account only one access path.
 For example, only from the experiment's own servers, so a stolen copy doesn't work from anywhere else.
 To log it, I'd record every use of the new credential, with the source IP and the time.
 Then I'd alert on any use from outside that path.
+
+## rootkit_investigate - How would you investigate a suspected rootkit on a Linux server | We suspect a rootkit on a server, what do you do | How do you investigate a rootkit
+The key idea is that the machine can lie to me.
+A rootkit changes what ps, ls or netstat show, so I don't trust the tools on that server.
+So I compare what the machine says with evidence from outside it.
+First I isolate it from the network side, at the switch or firewall, and keep it running.
+Then I capture the memory and the disk before touching anything.
+I analyse both on another, clean machine.
+And the network logs, like Zeek, are an independent source the rootkit can't edit.
+If Zeek sees a connection but ss on the host doesn't, something is hiding it.
+Anything the network or the memory shows, but the machine hides, is the rootkit.
+In the end, I rebuild it from a clean image, I don't try to clean it.
+
+## memory_tool - Which tool would you use to capture the memory | How do you dump memory on Linux | What tool for memory acquisition | Which tool for the memory | How would you analyse the memory
+If it's a VM, I would take the memory snapshot from the hypervisor, so nothing runs inside the compromised kernel.
+On a physical machine, I would use AVML or LiME, from trusted external media.
+AVML is a single static program, so I don't install anything on the suspicious machine.
+LiME is a kernel module, so it has to match that exact kernel, and loading it changes the machine a little.
+I write the dump to external storage or over the network, never to the local disk.
+Then I analyse it on another machine with Volatility 3.
+It needs the symbols for that exact kernel version, so I note the kernel version first.
+Then I compare the process list in memory with what ps showed. A process that's only in memory is what the rootkit hides.
+
+## telemetry_gap - The telemetry from a host suddenly disappears | A host stopped sending logs, what do you do | The agent on a server went silent
+The gap itself is evidence. Attackers stop the logging before they do something.
+I wouldn't shut the machine down, because memory is evidence too.
+I would isolate it from the network side, at the switch port or the firewall, not from the host.
+On the host, a rootkit could fake the result of my commands.
+Then I look at the last logs before the gap, and at the network logs for that IP during the gap.
+
+## beacon_detection_rule - How would you write a rule to detect beaconing | How would you turn beacon detection into a rule that doesn't flood the SOC | A beaconing rule without too many alerts | How would you turn the beacon detection into a rule | How do you avoid false positives with beaconing
+I would group connections by source, destination and port, and look for intervals with little variation.
+I would test it first on past data, to see how many alerts it would give.
+Many legitimate processes repeat too, like NTP, updates, monitoring and backups, so I exclude the known ones.
+Attackers add jitter, so I don't look for exactly sixty seconds, but for gaps that are regular within a tolerance.
+And if the destination IP is in MISP, the priority goes up.
+
+## triage_script_improved - How do you investigate an incident | How do you approach a new investigation | How do you learn a new environment | How would you get up to speed here | How would you get up to speed in a new environment like ours | How do you ramp up in a new team | How do you keep learning on the job | Have you improved your script | What's new with your script
+(Maria confirmed 2026-10-18. Call it a "script", never an "agent". "Since we last spoke" counts towards the 1-2 uses of "since our first interview": if already used, say "I've recently improved".)
+I've recently improved the triage script I mentioned last time.
+Now it also looks for similar past incidents, and reuses the searches that worked.
+It's the same idea as a SOC: learn from the cases you already solved.
+And it keeps a list of the parts of the architecture I don't understand yet.
+On quiet days, that list is my study plan.
+
+## ai_governance_own_use - Do you use AI tools in your work | How do you use AI at work | How should people use AI safely | What is the first control for AI use | How would you govern AI use
+(Maria confirmed 2026-10-18: Copilot was the only AI tool Amadeus fully approved for internal data.)
+At Amadeus, I extended my triage script with Copilot, because it was the only AI tool the company had fully approved for internal data.
+I think that's the first control for AI use: deciding which tools are allowed to see which data.
+And I review every query it drafts before I run it.
+
+## triage_script_safe - Is your tool safe | Is the script secure | Would you share the script with the team | What access does the script have
+It only reads, using my own login.
+Before sharing it with the team, I'd have it reviewed and switch to whatever access the team approves.
+And I'd document exactly what it does.
+
+## why_cern_not_private - Why not continue that cybersecurity path at a private company like AWS or Amadeus | Why not do security at a private tech company | Why CERN and not a private company | Why not stay in industry | Why not a security role at AWS or Amadeus | Why specifically CERN and not a tech company
+(Maria, 2026-10-18: her Amadeus incidents are production incidents, NOT security incidents. If the question assumes she already does security, correct it first in one line. WLCG: "around a hundred and seventy computing centres", never "thousands of institutes".)
+Just to clarify, the incidents I handle at Amadeus are production incidents, not security incidents.
+Security is the path I want to start now, and I would rather start it here.
+What draws me is the openness.
+Liviu's Zeek Workshop talk says it in the title: the balance between academic freedom and security.
+At a company, you control the devices. Here you can't, so security has to work with people, not against them.
+And with the WLCG, around a hundred and seventy computing centres in more than forty countries depend on each other.
+That's a harder and more interesting problem.
+
+## payments_flow_ownership - Which parts of the payments flow did you personally design and implement | What was the most difficult technical decision in the payments project | What was the hardest decision in that project | What did you build yourself in the payments flow | Which parts did you personally design
+(Maria, mock 2026-10-18. Token lifetime: say "about three hours", never another number. HOW she handled the token expiring mid-batch is NOT in the notes: never invent a mechanism like refresh timers or retries.)
+I designed the Power Automate flow logic, and I set up the Key Vault.
+I created the vault myself, and it held the bank API credential and the API key.
+I also built the dashboards on top, for successful and reversed payments.
+The hardest decision was how to handle the bank's temporary token.
+It expired after about three hours, so the flow requested it fresh and never stored it with the static credentials.
+And since there were many payments, a long batch could outlive the token.
+So I had to organise the batches so they never kept running with an expired token.
+
+## proc_pid_inspect - What would you look at in /proc for a suspicious process | What do you check in /proc/4321 | Which files in proc for a process | How do you check the binary of a running process
+In status, the Uid line has four values: real, effective, saved and filesystem.
+The exe link points to the binary. If it says deleted, the binary was removed while it was still running, and that's a red flag.
+I would also read cmdline, and the open connections of that process.
+To check the binary, I wouldn't trust its date, because an attacker can change it with touch.
+I would hash it with sha256sum, and compare it with the packaged version, rpm dash V checks the file against its package.
+Timestamps can be faked, hashes can't.
+
+## puppet_auditd - How would you deploy auditd with Puppet | Write a Puppet class for auditd | Where do the audit rules go | How do you load the audit rules with Puppet
+(OpenVox: CERN is migrating its Puppet fleet to OpenVox, public VoxConf talk of 16/07/2026. Maria didn't read those slides: say "since you're migrating to OpenVox", never "I read".)
+A package resource for audit, the config file from a template, and the service with subscribe on the config.
+The rules go in a file under etc audit rules dot d, and they're loaded with augenrules dash dash load.
+So the rules file notifies an exec that runs augenrules, only when the file changes.
+On RHEL, auditd refuses a restart through systemctl, so the service resource uses service auditd restart.
+And since you're migrating to OpenVox, the same manifest works, because it's a community fork of Puppet.
+
+## kafka_consumer_down - The Kafka consumer that writes to OpenSearch is down, what happens | A consumer was down, what do you lose | Retention is sixty minutes and the consumer was down ninety | How do you recover the missing events
+(SOC numbers from Liviu's HTCondor slides: around three and a half billion network connections a day. Ninety minutes is a couple of hundred million connections.)
+Kafka keeps the events, so the consumer group's lag grows while it's down.
+When it comes back, it continues from its last committed offset.
+If retention is shorter than the outage, I compare that committed offset with the oldest offset Kafka still has.
+With sixty minutes of retention and ninety down, about thirty minutes are lost.
+I would replay them from the logs Zeek keeps on disk, if it keeps them, and mark them as reconstructed.
+Then I re-run the detections over that window, because old data doesn't always trigger alerts on its own.
+At the scale in Liviu's slides, ninety minutes is a couple of hundred million connections.
+So I would want an alert on consumer lag long before retention runs out, and a retention longer than our reaction time.
+
+## m365_app_consent - A user consented to a malicious app in Microsoft 365, what do you do | Illicit consent grant | An OAuth app got access to a mailbox | How do you investigate an app consent
+(SCuBA: the Entra ID baseline says only administrators should consent to applications. Maria read the SCuBA page.)
+First, the Entra ID audit logs, to see who consented, when, and to which permissions.
+Then I check if it was user consent or admin consent, and if the permissions are delegated or application.
+Application permissions work without any user, across the whole tenant, so they're the most dangerous.
+I would revoke its permissions, or disable the service principal, without touching the user's account.
+To know the damage, I check what it read in the unified audit log, events like MailItemsAccessed and FileAccessed.
+And I look for other users who consented to the same app.
+To prevent it, I would restrict user consent, and send everything else through an admin consent workflow.
+The SCuBA baseline for Entra ID says only administrators should consent to applications, so I would check that early.
+
+## payments_idempotency - How did you avoid paying twice | What if the bank call times out | How do you make the payment calls safe to retry | Idempotency in the payments flow
+(Maria confirmed 2026-10-18: the bank's API let her query a payment's status, and she described this design as hers in the mock. Say it as something she did.)
+The key was idempotency.
+Each payment got a unique ID before the call, and its state was saved before sending it.
+If a call timed out, the flow asked the bank for that payment's status before retrying.
+That way, a payment was never sent twice.
+
+## ransom_pay - Do we pay the ransom | Should we pay | Would you pay the ransom | They ask if they should pay
+(Never "No, I would not pay" as if it were her decision: the decision belongs to the institute's management with legal.)
+It's not my decision, it's the institute's management, with their legal team.
+My advice would be not to pay.
+It doesn't guarantee recovery, and the data has probably been stolen already, so paying doesn't stop them publishing it.
+And it funds the next attack.
+I would focus on restoring from clean, offline backups and rebuilding.
+
+## rce_open_source_library - A critical RCE in a widely used open source library, how do you find what is actually vulnerable | An RCE in an open source library used across thousands of apps, how do you prioritise | Which running services are actually vulnerable to a new library CVE
+(Barad-Dûr only sees EXPOSED web services found from DNS: product, headers, certificate. It never sees libraries inside an app: those come from the SBOM. "Time-to-Exploit has gone negative" is a slide title in Liviu's HTCondor slides. Puppet: only "with a fact that reports installed packages", never claim Puppet collects them by default.)
+First, the exact version, not just the package name.
+Distributions like RHEL backport fixes without changing the upstream version, so I would check the distro's advisory, not only the number.
+For containers, the SBOM, as in your article The road to SBOM, tells me which images contain the library.
+For VMs without an inventory, Puppet helps: with a fact that reports installed packages, one query covers the whole fleet.
+Barad-Dûr would tell me which exposed web services run the affected product.
+Then I check if the vulnerable code is reachable, and I start with internet facing and high privilege systems.
+As Liviu's slides say, time to exploit has gone negative, so I mitigate before the patch, disabling the feature or filtering the traffic.
+At the end, I verify the new version is installed and that running processes were restarted, because they keep the old library loaded.
+
+## strands_why_not - Why didn't you use Strands | Did you use Strands | Strands or Bedrock Agents
+(Maria, 2026-10-18: she designed it with Strands; the built version was a prototype. That is the only reason: never add another, like time or speed.)
+I designed it with Strands.
+But it was a prototype, so the version I built ran on Bedrock Agents.
+Moving to Strands would put the agents' logic in code, versioned and testable, which also makes security review easier.
+
+## puppet_sshd - How would you manage the SSH configuration with Puppet | Write a Puppet class for sshd | How do you avoid breaking SSH with Puppet
+A package resource for openssh server, then the config file from a template.
+The file has validate_cmd, running sshd dash t dash f on the new file, so a broken config is never written.
+And the service with subscribe on the file, so it restarts only when the config changes.
+
+## scheduled_task_check - How do you check scheduled tasks on Linux | Where would you look for persistence in scheduled jobs | A suspicious scheduled task
+I would check crontab for every user, and the files in etc cron dot d.
+Then the systemd timers, and atq for one-off at jobs.
+For anything odd, I look at what the script actually does, and who owns it.
+
+## first_three_months - What would you do in your first three months | How would you spend your first ninety days | What would your first months look like
+(Stefan said in round 1 that the cloud review is about a third of the time at the start.)
+I would start with the Microsoft 365 review, since you said it's about a third of the time at the start.
+Going through the settings one by one, understanding what each does, and checking who uses it in the logs.
+In parallel, I would learn the SOC pipeline, from Zeek to Kafka and OpenSearch, by following real alerts.
+And I would read the team's Puppet code, starting with small changes on a test node.
+
+## stability_vs_security_change - Walk me through a situation where you had to balance operational stability with a security related change | A time you balanced stability and security | A security change that could break production | Balance operational stability with a security change
+(No exact case at Amadeus: say so, then the freelance flow. Power Automate has no repository: never "repo history". The bank API let her query a payment's status (Maria, 2026-10-18).)
+I don't have an exact case at Amadeus, so let me give you the closest real one, from a freelance project.
+I built a Power Automate flow that called a bank's REST API for more than 2,000 payouts a week.
+The credential lived in Azure Key Vault, not in the flow.
+The risk was breaking payments, so the key was idempotency.
+Every payment got a unique ID before the call, and before any retry the flow checked whether the bank had already processed it.
+That way, security never cost us stability.
+
+## payments_alternatives - What alternatives did you consider and why did you reject them | Which alternatives did you reject in the payments flow | Why not keep the credential in the flow
+(Power Automate: the flow is a definition on the platform, there is no repo. Token: she never stored it; each batch requested a fresh one, and she organised the batches so a long batch never kept running with an expired token. The exact mechanism beyond that is not in the notes: never invent one like "it requested a new one when it expired".)
+I rejected keeping the credential in the flow, because anyone who could edit or export the flow would see it.
+I also rejected storing the bank's token.
+It expired after about three hours, so the flow requested a fresh one.
+And since a large batch could outlive it, I organised the batches so none kept running with an expired token.
+Combined with the unique payment ID, a retry could never pay twice.
+
+## copilot_safety - How do you ensure Copilot doesn't leak sensitive information or introduce something unsafe | How do you make sure the AI suggestions are safe | Can Copilot leak data or break production
+(Copilot is APPROVED for internal data: never "nothing confidential goes into Copilot". The script is read-only by design (GETs, pages, screenshots), not enforced by a role. It's a personal tool, never in production. Checking suggested dependencies is NOT in the notes: never claim it.)
+For the data, Copilot is the tool Amadeus approved for internal data, so nothing leaves the approved boundary.
+For safety, Copilot never runs anything. It drafts queries, and I review each one before I run it.
+And the script only reads: GET requests, pages and screenshots, so even a bad query can't change anything.
+It's also a personal tool, so nothing it does goes to production.
+The read-only part is by design, not enforced by a role yet, so a read-only scope would be the next step.
+
+## token_expiry_practice - What happened when the bank token ran out halfway through | Did you ever see failures because the bank token timed out | Was the token ever a problem | Did the token ever expire on you | Did you ever see failures because the bank token expired | Was the token lifetime ever a problem in practice | How long did the bank's token last | What if the token expired mid batch
+(Maria's own words: a long run could outlive the token, so she had to organise the batches. Whether it ever actually failed is NOT in the notes: never "it never happened", "it was never a problem", "it did expire" or "it didn't come up", and never a mechanism like checking the token's status.)
+I organised the batches precisely so that wouldn't happen.
+The token lasted about three hours, and with many payments a long batch could outlive it.
+I never stored the token, the flow requested a fresh one.
+And I organised the batches so none kept running with an expired token.

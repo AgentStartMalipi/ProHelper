@@ -45,6 +45,11 @@ class Config:
     LLM_MODEL: str = "claude-sonnet-5"
     LLM_EFFORT: str = "low"
     API_KEY: str = ""
+    # Respaldo del CLI, como en SCREEN: si `claude -p` falla (limite de la sesion,
+    # sin login, se colgo), la misma llamada va por la API de Anthropic. La key:
+    # API_KEY de aqui o, si no hay, ANTHROPIC_API_KEY del .env del proyecto (la de SCREEN).
+    API_FALLBACK: bool = True
+    API_FALLBACK_MODEL: str = "claude-sonnet-5-5"
 
     # --- Speech-to-text --------------------------------------------------
     # faster_whisper (local) | deepgram (nube, en vivo y archivos) |

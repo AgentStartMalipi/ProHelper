@@ -33,6 +33,9 @@ _STOP = set(
     "i we it that this tell about time can could would there their our be have has had any some by from as".split()
 )
 
+# Muletillas que pueden ir con "?" sin ser la pregunta: "Really? Give me an example."
+_FILLER = set("okay right really interesting sure yeah yes thanks thank good great alright sorry hmm".split())
+
 
 def _keywords(text: str) -> set[str]:
     return {w for w in _WORD_RE.findall(text.lower()) if w not in _STOP and len(w) > 2}
@@ -83,6 +86,12 @@ class PreparedIndex:
         words = _keywords(" ".join(question.split()[-self.tail_words:]))
         sentences = [s for s in re.split(r"[.!?]+", question) if _keywords(s)]
         last = _keywords(sentences[-1]) if sentences else words
+        # La pregunta anterior del mismo turno, si la hay: "What is SSRF...? Give me one concrete
+        # example." pide un ejemplo DE ESO, no la historia de "Give me a concrete example"
+        # (simulacro 2026-10-18 12:26: salio el caso del login para SSRF). Solo si la ultima frase es
+        # corta (un "dame un ejemplo", "que miras primero"): una frase larga ya es la pregunta.
+        asked = [s for s in re.findall(r"[^.!?]+[.!?]*", question) if _keywords(s)]
+        prev_q = _keywords(asked[-2]) - _FILLER if len(asked) > 1 and asked[-2].rstrip().endswith("?") else set()
         best: Match | None = None
         for entry in self.entries:
             for phrasing in entry.phrasings:
@@ -95,6 +104,8 @@ class PreparedIndex:
                     continue
                 if self.min_precision and len(last & phrasing) / len(last) < self.min_precision:
                     continue
+                if prev_q and len(last) <= 4 and len(prev_q & phrasing) / len(prev_q) < (self.min_precision or 0.5):
+                    continue  # casa con el "dame un ejemplo" final, no con el centro de la pregunta
                 # Empate de puntaje: gana la que comparte mas palabras ("How do we
                 # know you won't leave after six months?" -> la de compromiso, no
                 # la de "por que dejas Amadeus").

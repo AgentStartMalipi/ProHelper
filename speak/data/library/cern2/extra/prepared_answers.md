@@ -131,13 +131,13 @@ That's why I want to make the jump now.
 
 ## incident_hard_amadeus - Tell me about a difficult incident you handled | Tell me about a problem where the root cause wasn't obvious | A problem where the cause was not obvious | Tell me about a hard problem you solved
 (It was AUTHENTICATION: never mention TLS or the network as a hypothesis. No invented lesson.)
-The situation was that users at one airport couldn't log in to their backup environment in another region.
+The situation was that one group of users couldn't log in to their backup environment.
 My job was to find the cause.
-So what I did was go first to that region's gateway logs in Splunk.
+So what I did was go first to the gateway logs of that environment in Splunk.
 Their logins went from normal to only failures after one night, all with the same reason, the authentication server denied access.
 So I ruled out the network and the application.
 Then I looked for recent changes on those users.
-The result was that I found a migration of those accounts to a new authentication mechanism, and the backup region didn't support it yet.
+The result was that I found a migration of those accounts to a new authentication mechanism, and the backup environment didn't support it yet.
 I documented it with the evidence, and the SRE team confirmed it and owned the fix.
 
 ## recent_changes_how - What recent changes were you looking for | How did you find the recent changes | How do you check recent changes | What kind of changes do you look for
@@ -150,33 +150,34 @@ That's how I found a user migration.
 The failures started about five minutes after it was deployed.
 
 ## login_failure_case - Tell me about a recent incident | Give me a concrete example of an incident | You say instinct, give me a concrete example | Give me a concrete example of that | How did you correlate the logs | What did the logs or timestamps show | What was the change that caused it | Who fixed it
-Last week, users at one airport couldn't log in to their backup environment in another region.
-I went to Splunk, to the logs of that region's Citrix NetScaler gateways.
+(Never internal Amadeus details: no airport, airline, region, product names like NetScaler, LDAP or Keycloak.)
+Last week, one group of users couldn't log in to their backup environment.
+I went to Splunk, to the logs of the access gateways for that environment.
 First, I checked the timeline.
 Before that, those users logged in normally every day.
 After one night, there were only failures.
 Every failure had the same reason: "External authentication server denied access".
 That was true for 25 different users.
-The authentication messages showed that region's LDAP policy rejecting them.
+The authentication messages showed the authentication policy rejecting them.
 Then I ruled things out.
 The requests reached the gateway, so it wasn't the site's network.
-The region was fine for everyone else, with normal login numbers.
-The same users still logged in fine in their main region.
-And a test with a different account opened the application in the backup region.
+The environment was fine for everyone else, with normal login numbers.
+The same users still logged in fine in their main environment.
+And a test with a different account opened the application in the backup environment.
 So it was authentication, only for those users.
 Then I looked for the change.
 A migration of those accounts was deployed, and about five minutes later the failures started.
 After it, every attempt failed.
 I documented that as the likely cause, and the SRE team confirmed the change and owned the fix.
-The accounts had moved to Keycloak, and the backup region didn't support it yet.
+The accounts had moved to a new identity provider, and the backup environment didn't support it yet.
 (One more detail if they push on numbers: the failure counts were indexed events that looked duplicated, so I didn't report them as unique attempts. The only timing number to say is "about five minutes" between the deploy and the failures.)
 
 ## login_gateway_evidence - How did you confirm the requests reached the gateway | What field or log entry showed the request arriving | How did you rule out the network | What exactly was in the gateway logs
 The failures themselves were logged by the gateway.
-In Splunk, I searched the NetScaler events called LOGIN_FAILED for those users.
+In Splunk, I searched the gateway's login failed events for those users.
 Each one had a Failure_reason field: "External authentication server denied access".
 Each entry also had the user name, and that's how I counted 25 different users.
-The gateway can only log that if the request arrived and it asked LDAP.
+The gateway can only log that if the request arrived and it asked the authentication server.
 If it were the network, those users wouldn't be in the logs at all.
 For the before and after, I counted the logins and failed logins per day.
 (The entries also show the client IP, but I didn't analyse the IPs: never claim I did. If
@@ -195,16 +196,16 @@ That configuration is theirs, not mine.
 ## login_again_tonight - Suppose the same thing happens again tonight | What would you check first | What would make you change your mind | If it happened again what would you do | What if it happens again tonight
 (Maria's own account, 2026-10-13.)
 First I would check Splunk for the same failure reason on the gateway.
-Then I would check if it only hits users from that same airport, or other users too.
+Then I would check if it only hits that same group of users, or other users too.
 That tells me if it's the same cause again or a new one.
 I would also check if the migration or any other change touched those accounts again.
 What would change my mind is a different error reason.
 The same goes if it hits users outside the migrated group.
-For example, users at other airports or other customers complaining about the same issue.
+For example, other groups of users complaining about the same issue.
 
 ## login_evidence_short - Summarize the evidence | What were the key signals | Give me the evidence in short
 There were three things in the logs.
-One, every failure was a LOGIN_FAILED event, so the gateway had received the request.
+One, every failure was a login failed event, so the gateway had received the request.
 Two, the reason was the same for all 25 users: a clear denial, not a timeout.
 Three, it started with the user migration.
 Same error, same group and same moment.
@@ -218,11 +219,11 @@ The no-response side was a payment link incident.
 There, the external provider didn't answer at all, so the card payments timed out.
 
 ## login_afterwards - What changed afterwards | What happened after you found the cause | What was the lesson | What would you suggest
-The customer got a workaround right away: another region they already had access to.
-The backup region is planned to support the new mechanism within 30 days.
+The users got a workaround right away: another environment they already had access to.
+The backup environment is planned to support the new mechanism within 30 days.
 I don't know if any process changed after it.
 But what I would suggest is simple.
-Before migrating accounts, check every region and entry point those users rely on, including the backups.
+Before migrating accounts, check every environment and entry point those users rely on, including the backups.
 And it connects to security.
 Authentication logs are exactly where you'd also see an attacker.
 It's the same skill, with a different intent.
@@ -253,11 +254,14 @@ That entry gives me the message ID and other IDs.
 With those IDs, I follow the path the message took, application by application.
 That's how I see where it fails, and then I trace it back to the cause.
 
-## triage_script_details - How does your triage script work | How was authentication handled in the script | Did it use a token, a key, or something else | How do you make sure the script is read-only | What exactly does the script do | Did your team ask you to build it | Does the team use it
+## triage_script_details - How does your triage script work | Walk us through the architecture of your triage script | Go deeper in your triage automation script, architecture at a high level | What's the architecture of your script | How was authentication handled in the script | Did it use a token, a key, or something else | How do you make sure the script is read-only | What exactly does the script do | Did your team ask you to build it | Does the team use it
 It's one Python script, and it's a personal tool.
 Nobody asked for it.
 I built it to do my own investigations faster, because they follow the same steps every time.
 I want to improve it before I propose it to the team.
+Recently I extended it with Copilot, the only AI tool the company fully approved for internal data.
+Now it also looks for similar past incidents and reuses the searches that worked.
+And it keeps a list of the parts of the architecture I don't understand yet, which I study on quiet days.
 I give it an incident number, and it reads the ticket through the ticketing system's REST API.
 Then it takes the monitoring links and opens the first dashboards it finds in Thanos, Grafana and Splunk.
 At the end, it saves screenshots and a short summary in JSON and Markdown.
@@ -267,7 +271,7 @@ The only token is the page's anti-CSRF token, which it reads for the ticket API 
 That token is never saved in files or in the output.
 The script is read-only because it only does GET requests, reads pages and takes screenshots.
 But no read-only role enforces that yet, and that's what I would add next.
-And I always check the findings myself.
+And I always check the findings myself, and I review every query Copilot drafts before I run it.
 
 ## hackathon_secure_tunnel - Tell me about a hard technical challenge
 (Strongest story for a security team.)
@@ -322,7 +326,7 @@ But I haven't done hardening work myself yet, and that's where I want to grow.
 I did a ten-month internship at AWS.
 I also have five AWS certifications: Solutions Architect Associate, Machine Learning Engineer Associate and Generative AI Developer Professional, plus the two foundational ones, Cloud Practitioner and AI Practitioner.
 At AWS, I built only with Amazon's approved services.
-For my multi-agent prototype, I used the AWS CDK in Python.
+For my multi-agent prototype, I used the AWS CDK in TypeScript, with the agents' tools in Python Lambdas.
 On cloud security, I know the main ideas.
 For example, least privilege in IAM, using roles instead of wildcards, and no public S3 buckets.
 But I haven't done that work hands-on yet.
@@ -353,15 +357,14 @@ And I would send the vault's access logs to alerts.
 
 ## python_and_scripting - What is your experience with Python and scripting | Have you done shell scripting | Do you know PowerShell or bash | What programming languages do you like using | What kind of projects have you been doing | Software development experience | What kind of programming languages do you like using or projects you've been doing
 Python is my main language for coding.
-I built my investigation script in Python, and also an AWS multi-agent prototype with the CDK.
+I built my investigation script in Python, and also an AWS multi-agent prototype with Python Lambda tools.
 My thesis pipeline was in Python too.
 It used more than 20,000 protein sequences, ESM-2 embeddings and a PyTorch LSTM, served with Docker.
 At Amadeus, I use the Linux command line every day for troubleshooting.
 For example, I pipe kubectl into grep to find the pods I need.
 I also wrote a small PowerShell script that refreshes the incident queue page for me.
 And at AWS, I wrote a small script that collected public event information.
-(Details if asked: the prototype used Bedrock AgentCore, Strands and a Knowledge Base with
-RAG; the thesis sequences came from UniProt.)
+(Details if asked, from the repo review 2026-10-18: designed for Bedrock AgentCore, but BUILT as a partial prototype on Amazon Bedrock Agents: an orchestrator delegating to a training agent and a nutrition agent, Python Lambda tools on DynamoDB, CDK in TypeScript. Strands, the AgentCore services and the Knowledge Base stayed in the design: never say she used them.)
 
 ## monitoring_and_detection - What is your experience with monitoring and detection | Have you worked in a SOC
 At Amadeus, I use Grafana and Prometheus in a 24/7 follow-the-sun team.
@@ -578,7 +581,7 @@ At AWS, I was in the sales organization for Latin America, but my work there was
 I built the campaign landing pages in-house, instead of paying an outside vendor.
 I wrote them in HTML and CSS, and built the dashboards in Amazon QuickSight.
 More than two hundred sales people used them in each campaign.
-I also built a multi-agent prototype in Python, with the AWS CDK and Bedrock.
+I also built a multi-agent prototype on Amazon Bedrock Agents, with Python Lambda tools and the CDK in TypeScript.
 And at a hackathon, I connected two VMs with a secure, authenticated tunnel, and we won.
 So I was in sales, but I always went for the technical side.
 
@@ -600,16 +603,16 @@ Ansible has the same idea without an agent, pushing changes over SSH.
 And I've built infrastructure as code with the AWS CDK, so nobody changing servers by hand is already familiar.
 
 ## questions_for_them - Do you have questions for me | Any questions for us | What would you like to know | Is there anything you want to ask | Alright Maria any questions for us | Is there anything you'd like to ask me | Do you have any questions
-(Round 2. Already asked in round 1 (14/10): the eleven audit tasks (Lüders: two of them are the new firewalls), what comes after the cloud work, and a good first six months. Never repeat those. Ask 2, one for the team.)
+(Round 2. Already asked in round 1 (14/10): the eleven audit tasks, what comes after the cloud work, and a good first six months. Never repeat those, and never ask which internal networks come after the firewalls. If time is short, only the first one.)
 Yes, thank you. I have two.
-The first one is about the Microsoft 365 review.
-Do you have a test tenant for it, or do you rely on report-only mode and pilot groups?
-And the second one is for the SOC side.
-Last time you mentioned the new firewalls.
-Once they are in place, which internal networks are next for SOC monitoring?
+The first one is for Stefan, about the Microsoft 365 review.
+The first review was about two years ago. Since then, what has changed most: new Microsoft features, or new attacks like the device code phishing from July?
+And do you test settings in a separate tenant, or rely on report-only mode and pilot groups?
+The second one is for Liviu.
+In your HTCondor slides, you mentioned you're testing delayed blocking of kernel module loading. How is that going, and is it built on eBPF?
 Reserve questions:
 What did the graduates and students who did really well in your team have in common?
-How does the team evaluate the impact on users before deploying a setting across CERN?
+For Pau: on the first day of coordinating with EGI when a site is hit, what takes the most time?
 
 ## salary_and_availability - When could you start | Are you willing to relocate to Geneva
 (Maria, 2026-10-18: she needs the notice at Amadeus plus about two weeks to settle in the country. No fixed date.)
@@ -617,3 +620,8 @@ I would give notice at Amadeus, and I would like about two weeks to settle in Ge
 The exact date I can agree with HR, I'm flexible.
 I'm Spanish, so I'm an EU citizen and I don't need a visa.
 And yes, I would move to Geneva or the French border area for this role.
+
+## goodbye - Thank you that's all from our side | We're done, thank you | That's all for today | Any final words
+Thank you all for your time.
+I really enjoyed this conversation, and I'm very motivated by the work you're doing.
+I look forward to hearing from you.
